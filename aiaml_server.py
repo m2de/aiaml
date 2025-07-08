@@ -301,6 +301,8 @@ def think(keywords: List[str]) -> List[Dict[str, Any]]:
 def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
     """
     Retrieve full memory details by ID. Should use `think` first to get IDs.
+    Use this to recall specific memories. When interpreting them, focus only on what's relevant, don't mention anything that isn't relevant.
+    The consumer doesn't see all the details, so no need to refer to things that are no longer needed or not important to the conversation.
     
     Args:
         memory_ids: List of memory IDs to retrieve
