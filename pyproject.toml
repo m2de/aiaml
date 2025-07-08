@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiaml"
+version = "1.0.0"
+description = "AI Agnostic Memory Layer - A simple local memory system for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+aiaml = "aiaml_server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aiaml*"]
