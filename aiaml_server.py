@@ -782,12 +782,14 @@ def performance_monitor(operation: str):
     return decorator
 
 
-# Load and validate configuration
+# Global configuration - will be loaded in initialize_server() or at module level for backward compatibility
+config = None
+logger = None
+
+# Load configuration for backward compatibility when imported
 try:
     config = load_configuration()
     validation_issues = validate_configuration(config)
-    
-    # Setup logging
     setup_logging(config)
     logger = logging.getLogger(__name__)
     
@@ -816,7 +818,8 @@ except Exception as e:
     logger.critical(f"Failed to load configuration: {e}")
     exit(1)
 
-# Initialize the MCP server
+# Initialize MCP server for backward compatibility
+# This will be replaced by the enhanced initialization in main()
 mcp = FastMCP("AI Agnostic Memory Layer")
 
 # Legacy compatibility - maintain existing global variables for backward compatibility
@@ -1381,15 +1384,562 @@ def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
         return [error_response.to_dict()]
 
 
-def main():
-    """Main entry point for the AIAML server package."""
+def initialize_server() -> FastMCP:
+    """Initialize MCP server with enhanced configuration and validation."""
     try:
-        logger.info("Starting AIAML MCP server...")
-        mcp.run()
-    except KeyboardInterrupt:
-        logger.info("Server stopped by user")
+        # Load and validate configuration
+        server_config = load_configuration()
+        validation_issues = validate_configuration(server_config)
+        
+        # Setup logging with the loaded configuration
+        setup_logging(server_config)
+        init_logger = logging.getLogger('aiaml.init')
+        
+        # Report configuration validation issues
+        if validation_issues:
+            for issue in validation_issues:
+                if issue.startswith("ERROR:"):
+                    init_logger.error(issue[7:])  # Remove "ERROR: " prefix
+                elif issue.startswith("WARNING:"):
+                    init_logger.warning(issue[9:])  # Remove "WARNING: " prefix
+            
+            # Exit if there are any errors
+            error_count = sum(1 for issue in validation_issues if issue.startswith("ERROR:"))
+            if error_count > 0:
+                init_logger.critical(f"Server startup failed due to {error_count} configuration error(s)")
+                exit(1)
+        
+        # Log successful configuration loading
+        init_logger.info(
+            "Configuration loaded successfully",
+            extra={
+                'operation': 'config_load',
+                'memory_dir': str(server_config.memory_dir),
+                'git_sync_enabled': server_config.enable_git_sync,
+                'log_level': server_config.log_level,
+                'api_key_configured': server_config.api_key is not None
+            }
+        )
+        
+        # Create memory directory if it doesn't exist
+        try:
+            server_config.memory_dir.mkdir(parents=True, exist_ok=True)
+            init_logger.info(
+                f"Memory directory ready: {server_config.memory_dir}",
+                extra={'operation': 'directory_setup'}
+            )
+        except Exception as e:
+            init_logger.error(f"Failed to create memory directory: {e}")
+            raise
+        
+        # Initialize Git repository if Git sync is enabled
+        if server_config.enable_git_sync:
+            try:
+                git_repo_dir = server_config.memory_dir.parent
+                git_dir = git_repo_dir / ".git"
+                
+                if not git_dir.exists():
+                    init_logger.info("Initializing Git repository for memory synchronization")
+                    subprocess.run(
+                        ["git", "init"],
+                        check=True,
+                        capture_output=True,
+                        cwd=git_repo_dir
+                    )
+                    init_logger.info("Git repository initialized successfully")
+                
+                # Configure Git remote if specified
+                if server_config.git_remote_url:
+                    try:
+                        # Check if remote already exists
+                        result = subprocess.run(
+                            ["git", "remote", "get-url", "origin"],
+                            capture_output=True,
+                            cwd=git_repo_dir,
+                            text=True
+                        )
+                        
+                        if result.returncode != 0:
+                            # Add remote if it doesn't exist
+                            subprocess.run(
+                                ["git", "remote", "add", "origin", server_config.git_remote_url],
+                                check=True,
+                                capture_output=True,
+                                cwd=git_repo_dir
+                            )
+                            init_logger.info(f"Git remote configured: {server_config.git_remote_url}")
+                        else:
+                            init_logger.debug("Git remote already configured")
+                            
+                    except subprocess.CalledProcessError as e:
+                        init_logger.warning(f"Failed to configure Git remote: {e}")
+                        
+            except subprocess.CalledProcessError as e:
+                init_logger.warning(f"Git repository initialization failed: {e}")
+            except FileNotFoundError:
+                init_logger.warning("Git command not found - Git sync will be disabled")
+        
+        # Initialize the MCP server
+        server = FastMCP("AI Agnostic Memory Layer")
+        
+        init_logger.info(
+            "AIAML MCP server initialized successfully",
+            extra={
+                'operation': 'server_init',
+                'version': '1.0.0',
+                'features': {
+                    'git_sync': server_config.enable_git_sync,
+                    'authentication': server_config.api_key is not None,
+                    'memory_dir': str(server_config.memory_dir)
+                }
+            }
+        )
+        
+        return server
+        
     except Exception as e:
-        logger.critical(f"Server failed to start: {e}")
+        # Use basic logging if our logging setup failed
+        if 'init_logger' not in locals():
+            logging.basicConfig(level=logging.ERROR)
+            init_logger = logging.getLogger('aiaml.init')
+        
+        init_logger.critical(f"Server initialization failed: {e}", exc_info=True)
+        raise
+
+
+def initialize_server() -> FastMCP:
+    """Initialize MCP server with enhanced configuration and validation."""
+    try:
+        # Load and validate configuration
+        server_config = load_configuration()
+        validation_issues = validate_configuration(server_config)
+        
+        # Setup logging with the loaded configuration
+        setup_logging(server_config)
+        init_logger = logging.getLogger('aiaml.init')
+        
+        # Report configuration validation issues
+        if validation_issues:
+            for issue in validation_issues:
+                if issue.startswith("ERROR:"):
+                    init_logger.error(issue[7:])  # Remove "ERROR: " prefix
+                elif issue.startswith("WARNING:"):
+                    init_logger.warning(issue[9:])  # Remove "WARNING: " prefix
+            
+            # Exit if there are any errors
+            error_count = sum(1 for issue in validation_issues if issue.startswith("ERROR:"))
+            if error_count > 0:
+                init_logger.critical(f"Server startup failed due to {error_count} configuration error(s)")
+                exit(1)
+        
+        # Log successful configuration loading
+        init_logger.info(
+            "Configuration loaded successfully",
+            extra={
+                'operation': 'config_load',
+                'memory_dir': str(server_config.memory_dir),
+                'git_sync_enabled': server_config.enable_git_sync,
+                'log_level': server_config.log_level,
+                'api_key_configured': server_config.api_key is not None
+            }
+        )
+        
+        # Create memory directory if it doesn't exist
+        try:
+            server_config.memory_dir.mkdir(parents=True, exist_ok=True)
+            init_logger.info(
+                f"Memory directory ready: {server_config.memory_dir}",
+                extra={'operation': 'directory_setup'}
+            )
+        except Exception as e:
+            init_logger.error(f"Failed to create memory directory: {e}")
+            raise
+        
+        # Initialize Git repository if Git sync is enabled
+        if server_config.enable_git_sync:
+            try:
+                git_repo_dir = server_config.memory_dir.parent
+                git_dir = git_repo_dir / ".git"
+                
+                if not git_dir.exists():
+                    init_logger.info("Initializing Git repository for memory synchronization")
+                    subprocess.run(
+                        ["git", "init"],
+                        check=True,
+                        capture_output=True,
+                        cwd=git_repo_dir
+                    )
+                    init_logger.info("Git repository initialized successfully")
+                
+                # Configure Git remote if specified
+                if server_config.git_remote_url:
+                    try:
+                        # Check if remote already exists
+                        result = subprocess.run(
+                            ["git", "remote", "get-url", "origin"],
+                            capture_output=True,
+                            cwd=git_repo_dir,
+                            text=True
+                        )
+                        
+                        if result.returncode != 0:
+                            # Add remote if it doesn't exist
+                            subprocess.run(
+                                ["git", "remote", "add", "origin", server_config.git_remote_url],
+                                check=True,
+                                capture_output=True,
+                                cwd=git_repo_dir
+                            )
+                            init_logger.info(f"Git remote configured: {server_config.git_remote_url}")
+                        else:
+                            init_logger.debug("Git remote already configured")
+                            
+                    except subprocess.CalledProcessError as e:
+                        init_logger.warning(f"Failed to configure Git remote: {e}")
+                        
+            except subprocess.CalledProcessError as e:
+                init_logger.warning(f"Git repository initialization failed: {e}")
+            except FileNotFoundError:
+                init_logger.warning("Git command not found - Git sync will be disabled")
+        
+        # Initialize the MCP server
+        server = FastMCP("AI Agnostic Memory Layer")
+        
+        # Register the tools with the new server instance
+        register_tools(server)
+        
+        init_logger.info(
+            "AIAML MCP server initialized successfully",
+            extra={
+                'operation': 'server_init',
+                'version': '1.0.0',
+                'features': {
+                    'git_sync': server_config.enable_git_sync,
+                    'authentication': server_config.api_key is not None,
+                    'memory_dir': str(server_config.memory_dir)
+                }
+            }
+        )
+        
+        return server
+        
+    except Exception as e:
+        # Use basic logging if our logging setup failed
+        if 'init_logger' not in locals():
+            logging.basicConfig(level=logging.ERROR)
+            init_logger = logging.getLogger('aiaml.init')
+        
+        init_logger.critical(f"Server initialization failed: {e}", exc_info=True)
+        raise
+
+
+def register_tools(server: FastMCP) -> None:
+    """Register MCP tools with the server instance."""
+    
+    @server.tool()
+    @performance_monitor('remember')
+    def remember(agent: str, user: str, topics: List[str], content: str) -> Dict[str, str]:
+        """Store a new memory entry with validation and error handling."""
+        try:
+            # Validate input parameters
+            validation_error = validate_memory_input(agent, user, topics, content)
+            if validation_error:
+                return validation_error.to_dict()
+            
+            # Generate memory ID and create filename
+            memory_id = generate_memory_id()
+            filename = create_memory_filename(memory_id)
+            file_path = MEMORY_DIR / filename
+            
+            # Create memory content with metadata
+            timestamp = datetime.now().isoformat()
+            memory_content = f"""---
+id: {memory_id}
+timestamp: {timestamp}
+agent: {agent}
+user: {user}
+topics: {topics}
+---
+
+{content}
+"""
+            
+            # Store memory atomically
+            try:
+                # Write to temporary file first, then rename for atomicity
+                temp_file_path = file_path.with_suffix('.tmp')
+                temp_file_path.write_text(memory_content, encoding='utf-8')
+                temp_file_path.rename(file_path)
+                
+                logger.info(
+                    f"Memory stored successfully: {memory_id}",
+                    extra={
+                        'operation': 'remember',
+                        'memory_id': memory_id,
+                        'user': user,
+                        'agent': agent,
+                        'topics_count': len(topics),
+                        'content_length': len(content)
+                    }
+                )
+                
+            except Exception as e:
+                # Handle file I/O errors
+                error_response = error_handler.handle_memory_error(e, {
+                    'memory_id': memory_id,
+                    'file_path': str(file_path),
+                    'operation': 'store_memory'
+                })
+                return error_response.to_dict()
+            
+            # Sync to GitHub in background (non-blocking)
+            if ENABLE_GITHUB_SYNC:
+                threading.Thread(
+                    target=sync_to_github,
+                    args=(memory_id, filename),
+                    daemon=True
+                ).start()
+            
+            return error_handler.create_success_response(
+                'remember',
+                {
+                    'memory_id': memory_id,
+                    'message': f'Memory stored successfully with ID: {memory_id}'
+                },
+                {
+                    'filename': filename,
+                    'user': user,
+                    'agent': agent
+                }
+            )
+            
+        except Exception as e:
+            # Handle unexpected errors
+            error_response = error_handler.handle_memory_error(e, {
+                'operation': 'remember',
+                'user': user,
+                'agent': agent,
+                'topics': topics,
+                'content_length': len(content) if isinstance(content, str) else 0
+            })
+            return error_response.to_dict()
+
+    @server.tool()
+    @performance_monitor('think')
+    def think(keywords: List[str]) -> List[Dict[str, Any]]:
+        """Search for relevant memories by keywords with enhanced error handling."""
+        try:
+            # Validate input parameters
+            validation_error = validate_search_input(keywords)
+            if validation_error:
+                return [validation_error.to_dict()]
+            
+            # Search for memories
+            memories = []
+            
+            if not MEMORY_DIR.exists():
+                logger.warning("Memory directory does not exist")
+                return []
+            
+            # Process each memory file with error handling
+            for file_path in MEMORY_DIR.glob("*.md"):
+                try:
+                    memory_data = parse_memory_file_safe(file_path)
+                    if memory_data is None:
+                        continue  # Skip corrupted files
+                    
+                    # Calculate relevance score
+                    relevance_score = 0
+                    search_text = f"{' '.join(memory_data.get('topics', []))} {memory_data.get('content', '')}".lower()
+                    
+                    for keyword in keywords:
+                        keyword_lower = keyword.lower()
+                        if keyword_lower in search_text:
+                            # Higher score for topic matches
+                            if keyword_lower in ' '.join(memory_data.get('topics', [])).lower():
+                                relevance_score += 2
+                            else:
+                                relevance_score += 1
+                    
+                    if relevance_score > 0:
+                        memory_data['relevance_score'] = relevance_score
+                        memories.append(memory_data)
+                        
+                except Exception as e:
+                    # Log individual file processing errors but continue
+                    logger.warning(
+                        f"Error processing memory file {file_path.name}: {e}",
+                        extra={
+                            'operation': 'think_file_processing',
+                            'file_path': str(file_path),
+                            'keywords': keywords
+                        }
+                    )
+                    continue
+            
+            # Sort by relevance score and limit results
+            memories.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            memories = memories[:config.max_search_results]
+            
+            logger.info(
+                f"Search completed: found {len(memories)} relevant memories",
+                extra={
+                    'operation': 'think',
+                    'keywords': keywords,
+                    'result_count': len(memories)
+                }
+            )
+            
+            return memories
+            
+        except Exception as e:
+            # Handle unexpected errors
+            error_response = error_handler.handle_memory_error(e, {
+                'operation': 'think',
+                'keywords': keywords
+            })
+            return [error_response.to_dict()]
+
+    @server.tool()
+    @performance_monitor('recall')
+    def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
+        """Retrieve full memory details by ID with comprehensive error handling."""
+        try:
+            # Validate input parameters
+            validation_error = validate_recall_input(memory_ids)
+            if validation_error:
+                return [validation_error.to_dict()]
+            
+            results = []
+            
+            if not MEMORY_DIR.exists():
+                error_response = error_handler.handle_memory_error(
+                    FileNotFoundError("Memory directory does not exist"),
+                    {'operation': 'recall', 'memory_ids': memory_ids}
+                )
+                return [error_response.to_dict()]
+            
+            # Process each requested memory ID
+            for memory_id in memory_ids:
+                try:
+                    found = False
+                    
+                    # Search for the memory file
+                    for file_path in MEMORY_DIR.glob("*.md"):
+                        try:
+                            memory_data = parse_memory_file_safe(file_path)
+                            if memory_data and memory_data.get('id') == memory_id:
+                                results.append(memory_data)
+                                found = True
+                                break
+                        except Exception as e:
+                            # Log file processing errors but continue searching
+                            logger.warning(
+                                f"Error processing memory file {file_path.name} during recall: {e}",
+                                extra={
+                                    'operation': 'recall_file_processing',
+                                    'file_path': str(file_path),
+                                    'memory_id': memory_id
+                                }
+                            )
+                            continue
+                    
+                    if not found:
+                        # Create a specific error response for not found memory
+                        not_found_error = error_handler.handle_memory_error(
+                            FileNotFoundError(f"Memory with ID {memory_id} not found"),
+                            {
+                                'memory_id': memory_id,
+                                'operation': 'recall'
+                            }
+                        )
+                        results.append(not_found_error.to_dict())
+                        
+                except Exception as e:
+                    # Handle individual memory retrieval errors
+                    memory_error = error_handler.handle_memory_error(e, {
+                        'memory_id': memory_id,
+                        'operation': 'recall_individual'
+                    })
+                    results.append(memory_error.to_dict())
+            
+            return results
+                    
+        except Exception as e:
+            # Handle unexpected errors with proper error response
+            error_response = error_handler.handle_memory_error(e, {
+                'operation': 'recall',
+                'memory_ids': memory_ids if isinstance(memory_ids, list) else str(memory_ids),
+                'memory_ids_count': len(memory_ids) if isinstance(memory_ids, list) else 0
+            })
+            
+            return [error_response.to_dict()]
+
+
+def main():
+    """Main entry point for the AIAML server package with comprehensive startup validation."""
+    startup_logger = None
+    
+    try:
+        # Setup basic logging for startup
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        startup_logger = logging.getLogger('aiaml.startup')
+        
+        startup_logger.info("=" * 60)
+        startup_logger.info("AI Agnostic Memory Layer (AIAML) MCP Server")
+        startup_logger.info("Version: 1.0.0")
+        startup_logger.info("=" * 60)
+        
+        # Perform startup validation
+        startup_logger.info("Performing startup validation...")
+        
+        # Check Python version
+        import sys
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        if sys.version_info < (3, 10):
+            startup_logger.error(f"Python 3.10+ required, found {python_version}")
+            exit(1)
+        
+        startup_logger.info(f"Python version: {python_version} ✓")
+        
+        # Check required dependencies
+        try:
+            import mcp
+            startup_logger.info("MCP dependency available ✓")
+        except ImportError as e:
+            startup_logger.error(f"Required dependency missing: {e}")
+            startup_logger.error("Please install with: pip install 'mcp[cli]>=1.0.0'")
+            exit(1)
+        
+        # Initialize server with enhanced configuration
+        startup_logger.info("Initializing server...")
+        server = initialize_server()
+        
+        startup_logger.info("=" * 60)
+        startup_logger.info("Server startup completed successfully!")
+        startup_logger.info("Ready to accept MCP connections...")
+        startup_logger.info("=" * 60)
+        
+        # Start the server
+        server.run()
+        
+    except KeyboardInterrupt:
+        if startup_logger:
+            startup_logger.info("Server stopped by user (Ctrl+C)")
+        else:
+            print("\nServer stopped by user")
+    except SystemExit:
+        # Re-raise SystemExit to preserve exit codes
+        raise
+    except Exception as e:
+        if startup_logger:
+            startup_logger.critical(f"Server failed to start: {e}", exc_info=True)
+        else:
+            print(f"CRITICAL: Server failed to start: {e}")
         exit(1)
 
 
