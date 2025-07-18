@@ -13,10 +13,12 @@ import threading
 import subprocess
 import os
 import logging
+import time
+import functools
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 
 from mcp.server.fastmcp import FastMCP
 
@@ -122,12 +124,214 @@ def validate_configuration(config: Config) -> List[str]:
 
 
 def setup_logging(config: Config) -> None:
-    """Setup logging configuration based on config."""
-    logging.basicConfig(
-        level=getattr(logging, config.log_level),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    """Setup comprehensive logging configuration with structured logging."""
+    # Create custom formatter for structured logging
+    class StructuredFormatter(logging.Formatter):
+        """Custom formatter that adds structured context to log messages."""
+        
+        def format(self, record):
+            # Add structured fields to the record
+            if not hasattr(record, 'operation'):
+                record.operation = 'general'
+            if not hasattr(record, 'memory_id'):
+                record.memory_id = None
+            if not hasattr(record, 'user'):
+                record.user = None
+            if not hasattr(record, 'duration_ms'):
+                record.duration_ms = None
+            if not hasattr(record, 'connection_type'):
+                record.connection_type = None
+            
+            # Format the base message
+            formatted = super().format(record)
+            
+            # Add structured context if available
+            context_parts = []
+            if record.operation != 'general':
+                context_parts.append(f"op={record.operation}")
+            if record.memory_id:
+                context_parts.append(f"memory_id={record.memory_id}")
+            if record.user:
+                context_parts.append(f"user={record.user}")
+            if record.duration_ms is not None:
+                context_parts.append(f"duration_ms={record.duration_ms}")
+            if record.connection_type:
+                context_parts.append(f"connection={record.connection_type}")
+            
+            if context_parts:
+                formatted += f" [{' '.join(context_parts)}]"
+            
+            return formatted
+    
+    # Setup root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, config.log_level))
+    
+    # Clear any existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Create console handler with structured formatter
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(getattr(logging, config.log_level))
+    
+    formatter = StructuredFormatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+
+def log_authentication_attempt(success: bool, connection_info: Dict[str, Any]) -> None:
+    """Log authentication attempts for security monitoring."""
+    auth_logger = logging.getLogger('aiaml.auth')
+    
+    connection_type = connection_info.get('connection_type', 'unknown')
+    remote_address = connection_info.get('remote_address', 'unknown')
+    user_agent = connection_info.get('user_agent', 'unknown')
+    
+    if success:
+        auth_logger.info(
+            "Authentication successful",
+            extra={
+                'operation': 'auth_success',
+                'connection_type': connection_type,
+                'remote_address': remote_address,
+                'user_agent': user_agent
+            }
+        )
+    else:
+        auth_logger.warning(
+            "Authentication failed",
+            extra={
+                'operation': 'auth_failure',
+                'connection_type': connection_type,
+                'remote_address': remote_address,
+                'user_agent': user_agent
+            }
+        )
+
+
+def log_operation_error(operation: str, error: Exception, context: Dict[str, Any] = None) -> None:
+    """Log operation errors with comprehensive context."""
+    error_logger = logging.getLogger('aiaml.error')
+    
+    context = context or {}
+    
+    error_logger.error(
+        f"Operation failed: {str(error)}",
+        extra={
+            'operation': operation,
+            'error_type': type(error).__name__,
+            'memory_id': context.get('memory_id'),
+            'user': context.get('user'),
+            'keywords': context.get('keywords'),
+            'file_path': context.get('file_path')
+        },
+        exc_info=True
+    )
+
+
+def log_performance_metric(operation: str, duration_ms: float, context: Dict[str, Any] = None) -> None:
+    """Log performance metrics for monitoring."""
+    perf_logger = logging.getLogger('aiaml.performance')
+    
+    context = context or {}
+    
+    # Log performance metric
+    perf_logger.info(
+        f"Operation completed",
+        extra={
+            'operation': operation,
+            'duration_ms': round(duration_ms, 2),
+            'memory_id': context.get('memory_id'),
+            'user': context.get('user'),
+            'result_count': context.get('result_count'),
+            'keywords_count': context.get('keywords_count')
+        }
+    )
+    
+    # Log warning for slow operations
+    if duration_ms > 2000:  # More than 2 seconds
+        perf_logger.warning(
+            f"Slow operation detected: {operation} took {duration_ms:.2f}ms",
+            extra={
+                'operation': f"{operation}_slow",
+                'duration_ms': round(duration_ms, 2)
+            }
+        )
+
+
+def performance_monitor(operation: str):
+    """Decorator to monitor and log performance of operations."""
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            
+            try:
+                result = func(*args, **kwargs)
+                
+                # Calculate duration
+                duration_ms = (time.time() - start_time) * 1000
+                
+                # Extract context from function arguments and result
+                context = {}
+                
+                # Try to extract common context information
+                if 'memory_id' in kwargs:
+                    context['memory_id'] = kwargs['memory_id']
+                elif len(args) > 0 and hasattr(args[0], 'get'):
+                    # For dict-like first argument
+                    context['memory_id'] = args[0].get('memory_id')
+                
+                if 'user' in kwargs:
+                    context['user'] = kwargs['user']
+                elif len(args) > 1:
+                    # For user parameter in remember function
+                    if operation == 'remember' and len(args) >= 2:
+                        context['user'] = args[1]
+                
+                if 'keywords' in kwargs:
+                    context['keywords'] = kwargs['keywords']
+                    context['keywords_count'] = len(kwargs['keywords']) if kwargs['keywords'] else 0
+                elif operation == 'think' and len(args) > 0:
+                    context['keywords'] = args[0]
+                    context['keywords_count'] = len(args[0]) if args[0] else 0
+                
+                # Extract result count for search operations
+                if isinstance(result, list):
+                    context['result_count'] = len(result)
+                
+                # Log performance metric
+                log_performance_metric(operation, duration_ms, context)
+                
+                return result
+                
+            except Exception as e:
+                # Calculate duration even for failed operations
+                duration_ms = (time.time() - start_time) * 1000
+                
+                # Extract context for error logging
+                error_context = {}
+                if 'memory_id' in kwargs:
+                    error_context['memory_id'] = kwargs['memory_id']
+                if 'user' in kwargs:
+                    error_context['user'] = kwargs['user']
+                if 'keywords' in kwargs:
+                    error_context['keywords'] = kwargs['keywords']
+                
+                # Log the error with context
+                log_operation_error(operation, e, error_context)
+                
+                # Log performance for failed operation
+                log_performance_metric(f"{operation}_failed", duration_ms, error_context)
+                
+                raise
+        
+        return wrapper
+    return decorator
 
 
 # Load and validate configuration
@@ -202,23 +406,126 @@ def sync_to_github(memory_id: str, filename: str) -> None:
         return
     
     def _sync():
+        git_logger = logging.getLogger('aiaml.git')
+        start_time = time.time()
+        
         try:
+            git_logger.debug(
+                f"Starting Git sync for memory {memory_id}",
+                extra={
+                    'operation': 'git_sync_start',
+                    'memory_id': memory_id,
+                    'filename': filename
+                }
+            )
+            
             # Add the new file
-            subprocess.run(["git", "add", f"files/{filename}"], check=True, capture_output=True, cwd=MEMORY_BACKUP_DIR)
+            add_result = subprocess.run(
+                ["git", "add", f"files/{filename}"], 
+                check=True, 
+                capture_output=True, 
+                cwd=MEMORY_BACKUP_DIR,
+                text=True
+            )
+            
+            git_logger.debug(
+                f"Git add completed for {filename}",
+                extra={
+                    'operation': 'git_add',
+                    'memory_id': memory_id,
+                    'filename': filename
+                }
+            )
             
             # Create commit message
             commit_message = f"Add memory {memory_id} ({filename})"
-            subprocess.run(["git", "commit", "-m", commit_message], check=True, capture_output=True, cwd=MEMORY_BACKUP_DIR)
+            commit_result = subprocess.run(
+                ["git", "commit", "-m", commit_message], 
+                check=True, 
+                capture_output=True, 
+                cwd=MEMORY_BACKUP_DIR,
+                text=True
+            )
+            
+            git_logger.debug(
+                f"Git commit completed for {memory_id}",
+                extra={
+                    'operation': 'git_commit',
+                    'memory_id': memory_id,
+                    'commit_message': commit_message
+                }
+            )
             
             # Push to remote (always push, since we have remote configured)
-            subprocess.run(["git", "push", "origin", "main"], check=True, capture_output=True, cwd=MEMORY_BACKUP_DIR)
+            push_result = subprocess.run(
+                ["git", "push", "origin", "main"], 
+                check=True, 
+                capture_output=True, 
+                cwd=MEMORY_BACKUP_DIR,
+                text=True
+            )
+            
+            # Calculate total sync duration
+            duration_ms = (time.time() - start_time) * 1000
+            
+            git_logger.info(
+                f"Git sync completed successfully for memory {memory_id}",
+                extra={
+                    'operation': 'git_sync_success',
+                    'memory_id': memory_id,
+                    'duration_ms': round(duration_ms, 2),
+                    'filename': filename
+                }
+            )
                 
         except subprocess.CalledProcessError as e:
-            # Log error but don't fail the main operation
-            print(f"GitHub sync failed for {memory_id}: {e}")
+            # Calculate duration for failed operation
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log detailed error information
+            error_context = {
+                'memory_id': memory_id,
+                'filename': filename,
+                'git_command': ' '.join(e.cmd) if e.cmd else 'unknown',
+                'return_code': e.returncode,
+                'stdout': e.stdout.decode() if e.stdout else '',
+                'stderr': e.stderr.decode() if e.stderr else ''
+            }
+            
+            log_operation_error('git_sync', e, error_context)
+            
+            git_logger.warning(
+                f"Git sync failed for memory {memory_id}: {e}",
+                extra={
+                    'operation': 'git_sync_failed',
+                    'memory_id': memory_id,
+                    'duration_ms': round(duration_ms, 2),
+                    'error_type': 'CalledProcessError',
+                    'return_code': e.returncode
+                }
+            )
+            
         except Exception as e:
-            # Log any other errors
-            print(f"Unexpected error during GitHub sync for {memory_id}: {e}")
+            # Calculate duration for failed operation
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log unexpected errors
+            error_context = {
+                'memory_id': memory_id,
+                'filename': filename
+            }
+            
+            log_operation_error('git_sync', e, error_context)
+            
+            git_logger.error(
+                f"Unexpected error during Git sync for memory {memory_id}: {e}",
+                extra={
+                    'operation': 'git_sync_error',
+                    'memory_id': memory_id,
+                    'duration_ms': round(duration_ms, 2),
+                    'error_type': type(e).__name__
+                }
+            )
     
     # Run sync in background thread
     thread = threading.Thread(target=_sync, daemon=True)
@@ -226,7 +533,9 @@ def sync_to_github(memory_id: str, filename: str) -> None:
 
 
 def parse_memory_file(file_path: Path) -> Optional[Dict[str, Any]]:
-    """Parse a memory file and return its contents."""
+    """Parse a memory file and return its contents with comprehensive error handling."""
+    file_logger = logging.getLogger('aiaml.file')
+    
     try:
         content = file_path.read_text(encoding="utf-8")
         
@@ -253,7 +562,7 @@ def parse_memory_file(file_path: Path) -> Optional[Dict[str, Any]]:
                         else:
                             metadata[key] = value
                 
-                return {
+                parsed_data = {
                     "id": metadata.get("id", ""),
                     "timestamp": metadata.get("timestamp", ""),
                     "agent": metadata.get("agent", ""),
@@ -261,8 +570,59 @@ def parse_memory_file(file_path: Path) -> Optional[Dict[str, Any]]:
                     "topics": metadata.get("topics", []),
                     "content": memory_content
                 }
-    except Exception:
-        return None
+                
+                file_logger.debug(
+                    f"Successfully parsed memory file {file_path.name}",
+                    extra={
+                        'operation': 'parse_memory_file',
+                        'memory_id': parsed_data.get("id"),
+                        'file_path': str(file_path)
+                    }
+                )
+                
+                return parsed_data
+            else:
+                file_logger.warning(
+                    f"Memory file {file_path.name} has invalid frontmatter structure",
+                    extra={
+                        'operation': 'parse_memory_file_invalid',
+                        'file_path': str(file_path),
+                        'parts_count': len(parts)
+                    }
+                )
+        else:
+            file_logger.warning(
+                f"Memory file {file_path.name} does not start with frontmatter",
+                extra={
+                    'operation': 'parse_memory_file_no_frontmatter',
+                    'file_path': str(file_path)
+                }
+            )
+            
+    except UnicodeDecodeError as e:
+        log_operation_error('parse_memory_file', e, {
+            'file_path': str(file_path),
+            'error_type': 'encoding'
+        })
+        file_logger.error(
+            f"Encoding error reading memory file {file_path.name}: {e}",
+            extra={
+                'operation': 'parse_memory_file_encoding_error',
+                'file_path': str(file_path)
+            }
+        )
+    except Exception as e:
+        log_operation_error('parse_memory_file', e, {
+            'file_path': str(file_path)
+        })
+        file_logger.error(
+            f"Unexpected error parsing memory file {file_path.name}: {e}",
+            extra={
+                'operation': 'parse_memory_file_error',
+                'file_path': str(file_path),
+                'error_type': type(e).__name__
+            }
+        )
     
     return None
 
@@ -330,15 +690,30 @@ def calculate_relevance_score(memory_data: Dict[str, Any], keywords: List[str]) 
 
 def search_memories(keywords: List[str]) -> List[Dict[str, Any]]:
     """Search for memories containing the specified keywords, sorted by relevance."""
+    search_logger = logging.getLogger('aiaml.search')
     results = []
     
     if not keywords:
+        search_logger.debug("Empty keywords provided for search")
         return results
+    
+    search_logger.debug(
+        f"Starting memory search with {len(keywords)} keywords",
+        extra={
+            'operation': 'search_start',
+            'keywords_count': len(keywords),
+            'keywords': keywords
+        }
+    )
     
     # Convert keywords to lowercase for case-insensitive search
     keywords_lower = [k.lower() for k in keywords]
     
+    files_processed = 0
+    files_matched = 0
+    
     for memory_file in MEMORY_DIR.glob("*.md"):
+        files_processed += 1
         memory_data = parse_memory_file(memory_file)
         if not memory_data:
             continue
@@ -348,6 +723,7 @@ def search_memories(keywords: List[str]) -> List[Dict[str, Any]]:
         
         # Only include memories that have at least one matching keyword
         if relevance_info["score"] > 0:
+            files_matched += 1
             results.append({
                 "id": memory_data["id"],
                 "timestamp": memory_data["timestamp"],
@@ -359,10 +735,24 @@ def search_memories(keywords: List[str]) -> List[Dict[str, Any]]:
     results.sort(key=lambda x: (x["relevance_score"], x["timestamp"]), reverse=True)
     
     # Limit to configured maximum results
-    return results[:config.max_search_results]
+    limited_results = results[:config.max_search_results]
+    
+    search_logger.info(
+        f"Search completed: processed {files_processed} files, found {files_matched} matches, returning {len(limited_results)} results",
+        extra={
+            'operation': 'search_complete',
+            'files_processed': files_processed,
+            'files_matched': files_matched,
+            'results_returned': len(limited_results),
+            'keywords_count': len(keywords)
+        }
+    )
+    
+    return limited_results
 
 
 @mcp.tool()
+@performance_monitor('remember')
 def remember(agent: str, user: str, topics: List[str], content: str) -> Dict[str, str]:
     """
     Store a new memory entry.
@@ -416,6 +806,7 @@ topics: [{', '.join(topics)}]
 
 
 @mcp.tool()
+@performance_monitor('think')
 def think(keywords: List[str]) -> List[Dict[str, Any]]:
     """
     Search for relevant memories by keywords, sorted by relevance.
@@ -441,6 +832,7 @@ def think(keywords: List[str]) -> List[Dict[str, Any]]:
 
 
 @mcp.tool()
+@performance_monitor('recall')
 def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
     """
     Retrieve full memory details by ID. Should use `think` first to get IDs.
