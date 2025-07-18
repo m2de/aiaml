@@ -173,6 +173,90 @@ If recall fails entirely:
 - Focus only on relevant information from recalled memories - don't mention irrelevant details to users
 - Use recalled information to provide more personalized and contextually aware responses
 
+## User Stories
+
+### Human User Stories
+
+#### Memory Persistence
+**As a human user, I want the AI to remember personal information about me** so that I don't have to repeat my preferences, background, and context in every conversation.
+
+- **Example**: "I work at a tech startup in San Francisco, prefer vegetarian food, and have a dog named Max"
+- **Expectation**: AI automatically incorporates this context into future conversations without me having to re-explain
+
+#### Contextual Recommendations  
+**As a human user, I want the AI to use my stored preferences when making recommendations** so that suggestions are personalized and relevant to my situation.
+
+- **Example**: When I ask "Where should I have dinner tonight?", the AI knows I'm in San Francisco, prefer vegetarian food, and can suggest appropriate restaurants
+- **Expectation**: Recommendations are immediately relevant without requiring me to specify location, dietary preferences, or other known context
+
+#### Project Continuity
+**As a human user, I want the AI to remember ongoing projects and their details** so that I can continue conversations about work or personal projects seamlessly across multiple sessions.
+
+- **Example**: "I'm renovating my kitchen with a $15,000 budget, prefer modern farmhouse style, and am currently waiting for cabinet installation"
+- **Expectation**: AI tracks project progress, remembers constraints, and provides relevant advice in subsequent conversations
+
+#### Learning Progression
+**As a human user, I want the AI to track my learning progress and knowledge gaps** so that tutoring and educational assistance builds upon previous sessions.
+
+- **Example**: "I've mastered Python basics but struggle with object-oriented concepts and respond well to visual analogies"
+- **Expectation**: AI continues education from where we left off, using effective teaching methods for my learning style
+
+#### Simple Setup
+**As a human user, I want to install and configure the memory system with minimal effort** so that I can start benefiting from persistent memory immediately.
+
+- **Example**: Run one command and have the memory system working with my AI assistant
+- **Expectation**: No complex configuration, works out-of-the-box, clear documentation for any optional features
+
+#### Privacy Control
+**As a human user, I want my memories stored locally on my device** so that I maintain complete control over my personal information and conversation history.
+
+- **Example**: All memory files are stored on my computer, not sent to external services
+- **Expectation**: Full transparency about what's stored, where it's stored, and ability to examine or delete memories
+
+### AI Agent User Stories
+
+#### Tool Discovery
+**As an AI agent, I want clear documentation about available memory tools** so that I understand what capabilities are available to enhance user interactions.
+
+- **Need**: Understand that I have three tools: `remember`, `think`, and `recall`
+- **Expectation**: Clear descriptions of when and how to use each tool without human explanation
+
+#### Memory Storage Guidance
+**As an AI agent, I want to know what information is worth storing** so that I create useful memories that enhance future conversations.
+
+- **Need**: Guidelines for storing user preferences, project details, learning progress, and contextual information
+- **Expectation**: Understand how to choose appropriate topics and write useful content that will help in future interactions
+
+#### Memory Discovery
+**As an AI agent, I want to efficiently find relevant stored memories** so that I can incorporate appropriate context into my responses.
+
+- **Need**: Know how to search for memories using keywords that will return relevant results
+- **Expectation**: Understand the search algorithm and how to craft effective keyword queries
+
+#### Context Integration
+**As an AI agent, I want to seamlessly incorporate recalled memories into conversations** so that responses are personalized and contextually aware.
+
+- **Need**: Guidance on when to recall memories and how to use the information naturally
+- **Expectation**: Provide personalized responses without explicitly mentioning that I'm using stored memories unless relevant
+
+#### Error Handling
+**As an AI agent, I want to gracefully handle memory system errors** so that conversation flow isn't disrupted when memory operations fail.
+
+- **Need**: Understand how to continue providing helpful responses even if memory storage or retrieval fails
+- **Expectation**: Memory failures don't break my ability to assist the user
+
+#### Multi-Agent Collaboration
+**As an AI agent, I want to access memories created by other AI agents** so that I can provide consistent assistance across different specialized tools.
+
+- **Need**: Ability to discover and use memories created by coding assistants, writing helpers, or other specialized agents
+- **Expectation**: Seamless collaboration where context is shared appropriately between different AI tools
+
+#### Privacy Awareness
+**As an AI agent, I want to understand privacy implications of memory storage** so that I handle sensitive information appropriately.
+
+- **Need**: Know that memories are stored locally and understand user privacy expectations
+- **Expectation**: Be thoughtful about what information to store and how to use recalled information respectfully
+
 ## Workflow Examples
 
 ### Example 1: Personal Preference Management
