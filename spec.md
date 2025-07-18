@@ -17,6 +17,8 @@ AIAML operates as a Model Context Protocol (MCP) server providing exactly three 
 2. **`think`** - Search for relevant memories using keywords
 3. **`recall`** - Retrieve complete memory details by ID
 
+The server supports both local and remote MCP connections, allowing deployment flexibility for different use cases and environments.
+
 ### Memory Storage Format
 Memories are stored as individual markdown files with YAML frontmatter containing metadata and markdown content containing the actual memory text.
 
@@ -207,6 +209,18 @@ If recall fails entirely:
 - **Example**: Run one command and have the memory system working with my AI assistant
 - **Expectation**: No complex configuration, works out-of-the-box, clear documentation for any optional features
 
+#### Shared Memory Service
+**As a human user, I want to run the memory system as a shared service** so that multiple AI agents and applications can access the same memory store without conflicts.
+
+- **Example**: Run AIAML as a remote server that my coding assistant, writing helper, and personal AI can all connect to
+- **Expectation**: All AI agents share the same memory context, enabling seamless collaboration and consistency
+
+#### Secure Remote Access
+**As a human user, I want remote memory connections to be secured with authentication** so that my personal memories are protected from unauthorized access.
+
+- **Example**: Set an API key environment variable and only allow remote connections with valid authentication
+- **Expectation**: Local connections work without authentication for convenience, but remote connections require proper credentials
+
 #### Privacy Control
 **As a human user, I want my memories stored locally on my device** so that I maintain complete control over my personal information and conversation history.
 
@@ -250,6 +264,18 @@ If recall fails entirely:
 
 - **Need**: Ability to discover and use memories created by coding assistants, writing helpers, or other specialized agents
 - **Expectation**: Seamless collaboration where context is shared appropriately between different AI tools
+
+#### Remote Connection Support
+**As an AI agent, I want to connect to memory services both locally and remotely** so that I can access shared memory stores regardless of deployment architecture.
+
+- **Need**: Ability to connect to AIAML servers running on the same machine or on remote servers
+- **Expectation**: Seamless operation whether connecting locally or over network, with consistent tool behavior
+
+#### Secure Authentication
+**As an AI agent, I want to authenticate securely when connecting to remote memory services** so that I can access authorized memory stores while respecting security boundaries.
+
+- **Need**: Ability to provide API key authentication for remote connections
+- **Expectation**: Clear error messages when authentication fails, seamless operation when properly authenticated
 
 #### Privacy Awareness
 **As an AI agent, I want to understand privacy implications of memory storage** so that I handle sensitive information appropriately.
@@ -308,10 +334,12 @@ If recall fails entirely:
 - **Single Command Start**: Enable server startup with a single command (e.g., `npx aiaml-server`, `uv run aiaml-server`, `./run_server.sh`)
 - **MCP Library Requirement**: Must include Model Context Protocol library with CLI support (e.g., `mcp[cli]>=1.0.0` for Python)
 - **Minimum Runtime Requirements**: Support modern runtime versions (e.g., Python >=3.10, Node.js >=18, etc.)
+- **Local and Remote MCP Support**: Support both local process connections and remote network connections for flexible deployment scenarios
 
 ### Core Functionality
 - **Three MCP Tools Only**: The server must provide exactly three tools: `remember`, `think`, and `recall`
 - **MCP Server Initialization**: Initialize server with name "AI Agnostic Memory Layer"
+- **Connection Support**: Support both local process connections and remote network connections
 - **Memory ID Generation**: Generate unique 8-character hexadecimal identifiers using UUID4 (first 8 characters after removing hyphens)
 - **File-Based Storage**: Store memories as markdown files with YAML frontmatter in a dedicated directory
 - **Relevance Scoring**: Implement keyword-based relevance scoring with topic matches weighted 2x higher than content matches
@@ -335,6 +363,14 @@ If recall fails entirely:
 - **Git Operations**: Perform `git add`, `git commit`, and `git push origin main` for each new memory
 - **Working Directory**: Execute Git commands from the memory directory parent (e.g., `memory/` folder)
 - **File Path**: Add files using relative path `files/[filename]` from the Git repository root
+
+### Security Configuration
+- **API Key Authentication**: Support `AIAML_API_KEY` environment variable for securing remote connections
+- **Local Connection Security**: Local process connections bypass authentication for convenience
+- **Remote Connection Security**: Remote network connections require valid API key authentication
+- **Key Validation**: Validate API key on each remote connection request
+- **Authentication Failure**: Return appropriate error responses for invalid or missing API keys
+- **Key Management**: API key should be a simple string token, generated and managed by the user
 
 ### Memory Processing
 - **Frontmatter Parsing**: Parse YAML frontmatter to extract metadata using simple key-value parsing
@@ -380,6 +416,8 @@ If recall fails entirely:
 - **File Operations**: Use efficient file I/O operations to minimize disk access
 - **Memory Usage**: Minimize memory footprint during search operations
 - **Concurrent Access**: Handle multiple simultaneous requests without file corruption
+- **Network Performance**: Support efficient remote MCP connections with minimal latency overhead
+- **Connection Handling**: Maintain stable connections for both local and remote MCP clients
 
 ### Error Handling
 - **Graceful Degradation**: Continue operating even if individual memory files are corrupted
@@ -387,6 +425,8 @@ If recall fails entirely:
 - **Exception Safety**: Catch and handle all exceptions to prevent server crashes
 - **Logging**: Log errors for debugging while continuing operation
 - **Validation**: Validate all input parameters before processing
+- **Authentication Errors**: Return clear error messages for authentication failures without exposing system details
+- **Security Logging**: Log authentication attempts and failures for security monitoring
 
 ## Validation Criteria
 
@@ -419,13 +459,18 @@ If recall fails entirely:
 - **Return Formats**: Consistent JSON response structures across all tools
 - **Error Handling**: Proper error responses that don't break AI agent integrations
 - **Documentation**: Tool descriptions clear enough for AI agents to use without human explanation
+- **Authentication Integration**: Seamless API key authentication for remote connections within MCP protocol
 
 ### Deployment Validation
 - **Installation Simplicity**: Can be installed with a single package manager command
 - **Startup Speed**: Server starts and becomes ready to accept connections within 5 seconds
 - **Dependency Resolution**: All required dependencies install automatically without manual intervention
 - **Platform Compatibility**: Successfully runs on Windows, macOS, and Linux without platform-specific modifications
-- **Default Configuration**: Works out-of-the-box without requiring configuration files or environment variables (except optional Git sync)
+- **Default Configuration**: Works out-of-the-box without requiring configuration files or environment variables (except optional Git sync and API key for remote access)
 - **Resource Requirements**: Minimal system resource requirements suitable for development and production environments
+- **Connection Support**: Successfully handles both local process connections and remote network connections
+- **Multi-Client Support**: Can serve multiple concurrent MCP clients without performance degradation
+- **Security Validation**: API key authentication works correctly for remote connections, local connections bypass authentication
+- **Authentication Errors**: Clear error messages for authentication failures, proper security logging
 
 This specification provides complete implementation guidance for recreating the AIAML MCP server in any programming language while maintaining full compatibility with the existing API.
