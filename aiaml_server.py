@@ -22,6 +22,8 @@ from typing import Dict, List, Any, Optional, Callable
 
 from mcp.server.fastmcp import FastMCP
 from enum import Enum
+import socket
+import ipaddress
 
 
 class ErrorCategory(Enum):
@@ -515,6 +517,334 @@ class Config:
         # Validate max search results
         if self.max_search_results <= 0:
             raise ValueError("max_search_results must be positive")
+
+
+@dataclass
+class ConnectionInfo:
+    """Connection metadata for authentication and logging."""
+    is_local: bool
+    remote_address: Optional[str] = None
+    api_key: Optional[str] = None
+    user_agent: Optional[str] = None
+    connection_type: str = field(init=False)
+    
+    def __post_init__(self):
+        """Set connection type based on is_local flag."""
+        self.connection_type = "local" if self.is_local else "remote"
+
+
+def is_local_connection(connection_info: Dict[str, Any]) -> bool:
+    """
+    Determine if a connection is local or remote based on connection metadata.
+    
+    Args:
+        connection_info: Dictionary containing connection metadata
+        
+    Returns:
+        True if connection is local, False if remote
+    """
+    auth_logger = logging.getLogger('aiaml.auth')
+    
+    try:
+        # Extract connection details
+        remote_address = connection_info.get('remote_address', '')
+        client_host = connection_info.get('client_host', '')
+        peer_name = connection_info.get('peer_name', '')
+        
+        # Check for various indicators of local connection
+        local_indicators = [
+            '127.0.0.1',
+            'localhost',
+            '::1',  # IPv6 localhost
+            '0.0.0.0',  # Sometimes used for local binding
+        ]
+        
+        # Check remote address
+        if remote_address:
+            # Parse IP address if possible
+            try:
+                ip_str = remote_address.split(':')[0]  # Remove port if present
+                ip = ipaddress.ip_address(ip_str)
+                
+                # Check if it's a loopback address
+                if ip.is_loopback:
+                    auth_logger.debug(f"Connection identified as local: loopback address {ip}")
+                    return True
+                
+                # Check for special local addresses
+                if ip_str in ['0.0.0.0']:
+                    auth_logger.debug(f"Connection identified as local: special local address {ip}")
+                    return True
+                
+                # For authentication purposes, only loopback addresses are considered truly local
+                # Private network addresses should still require authentication for security
+                auth_logger.debug(f"Connection identified as remote: non-loopback address {ip}")
+                return False
+                    
+            except ValueError:
+                # Not a valid IP address, check string patterns
+                remote_lower = remote_address.lower()
+                for indicator in local_indicators:
+                    if indicator in remote_lower:
+                        auth_logger.debug(f"Connection identified as local: address contains {indicator}")
+                        return True
+        
+        # Check client host
+        if client_host:
+            client_lower = client_host.lower()
+            for indicator in local_indicators:
+                if indicator in client_lower:
+                    auth_logger.debug(f"Connection identified as local: client host contains {indicator}")
+                    return True
+        
+        # Check peer name
+        if peer_name:
+            peer_lower = peer_name.lower()
+            for indicator in local_indicators:
+                if indicator in peer_lower:
+                    auth_logger.debug(f"Connection identified as local: peer name contains {indicator}")
+                    return True
+        
+        # If no connection info is available, assume local (for backward compatibility)
+        if not remote_address and not client_host and not peer_name:
+            auth_logger.debug("No connection info available, assuming local connection")
+            return True
+        
+        # Default to remote if we have connection info but no local indicators
+        auth_logger.debug(f"Connection identified as remote: {remote_address or client_host or peer_name}")
+        return False
+        
+    except Exception as e:
+        # Log error but default to local for safety
+        auth_logger.warning(f"Error determining connection type, defaulting to local: {e}")
+        return True
+
+
+def validate_api_key(provided_key: str, configured_key: str) -> bool:
+    """
+    Validate provided API key against configured key.
+    
+    Args:
+        provided_key: API key provided by the client
+        configured_key: API key configured on the server
+        
+    Returns:
+        True if keys match, False otherwise
+    """
+    if not provided_key or not configured_key:
+        return False
+    
+    # Use constant-time comparison to prevent timing attacks
+    try:
+        import hmac
+        return hmac.compare_digest(provided_key.strip(), configured_key.strip())
+    except Exception:
+        # Fallback to regular comparison if hmac fails
+        return provided_key.strip() == configured_key.strip()
+
+
+def authenticate_connection(connection_info: ConnectionInfo, server_config: Config) -> tuple[bool, Optional[ErrorResponse]]:
+    """
+    Authenticate a connection based on type and credentials.
+    
+    Args:
+        connection_info: Connection metadata
+        server_config: Server configuration
+        
+    Returns:
+        Tuple of (success: bool, error_response: Optional[ErrorResponse])
+    """
+    auth_logger = logging.getLogger('aiaml.auth')
+    
+    try:
+        # Local connections bypass authentication
+        if connection_info.is_local:
+            auth_logger.debug("Local connection detected, bypassing authentication")
+            log_authentication_attempt(True, {
+                'connection_type': connection_info.connection_type,
+                'remote_address': connection_info.remote_address,
+                'user_agent': connection_info.user_agent
+            })
+            return True, None
+        
+        # Remote connections require API key if configured
+        if server_config.api_key:
+            if not connection_info.api_key:
+                error = ValueError("API key is required for remote connections")
+                error_response = error_handler.handle_authentication_error(error, {
+                    'connection_type': connection_info.connection_type,
+                    'remote_address': connection_info.remote_address,
+                    'user_agent': connection_info.user_agent,
+                    'reason': 'missing_api_key'
+                })
+                
+                log_authentication_attempt(False, {
+                    'connection_type': connection_info.connection_type,
+                    'remote_address': connection_info.remote_address,
+                    'user_agent': connection_info.user_agent
+                })
+                
+                return False, error_response
+            
+            # Validate the provided API key
+            if not validate_api_key(connection_info.api_key, server_config.api_key):
+                error = ValueError("Invalid API key provided")
+                error_response = error_handler.handle_authentication_error(error, {
+                    'connection_type': connection_info.connection_type,
+                    'remote_address': connection_info.remote_address,
+                    'user_agent': connection_info.user_agent,
+                    'reason': 'invalid_api_key'
+                })
+                
+                log_authentication_attempt(False, {
+                    'connection_type': connection_info.connection_type,
+                    'remote_address': connection_info.remote_address,
+                    'user_agent': connection_info.user_agent
+                })
+                
+                return False, error_response
+            
+            # API key is valid
+            auth_logger.info(f"Remote connection authenticated successfully from {connection_info.remote_address}")
+            log_authentication_attempt(True, {
+                'connection_type': connection_info.connection_type,
+                'remote_address': connection_info.remote_address,
+                'user_agent': connection_info.user_agent
+            })
+            return True, None
+        
+        else:
+            # No API key configured, allow remote connections (not recommended for production)
+            auth_logger.warning("Remote connection allowed without authentication (no API key configured)")
+            log_authentication_attempt(True, {
+                'connection_type': connection_info.connection_type,
+                'remote_address': connection_info.remote_address,
+                'user_agent': connection_info.user_agent,
+                'warning': 'no_auth_configured'
+            })
+            return True, None
+            
+    except Exception as e:
+        # Handle unexpected authentication errors
+        error_response = error_handler.handle_authentication_error(e, {
+            'connection_type': connection_info.connection_type,
+            'remote_address': connection_info.remote_address,
+            'user_agent': connection_info.user_agent,
+            'reason': 'unexpected_error'
+        })
+        
+        log_authentication_attempt(False, {
+            'connection_type': connection_info.connection_type,
+            'remote_address': connection_info.remote_address,
+            'user_agent': connection_info.user_agent
+        })
+        
+        return False, error_response
+
+
+def create_authentication_middleware(server_config: Config):
+    """
+    Create authentication middleware wrapper for MCP tools.
+    
+    Args:
+        server_config: Server configuration containing API key
+        
+    Returns:
+        Decorator function for wrapping MCP tools with authentication
+    """
+    def authenticate_tool(func: Callable) -> Callable:
+        """
+        Decorator to add authentication to MCP tool functions.
+        
+        Args:
+            func: The MCP tool function to wrap
+            
+        Returns:
+            Wrapped function with authentication
+        """
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            auth_logger = logging.getLogger('aiaml.auth')
+            
+            try:
+                # Extract connection information from the request context
+                # In FastMCP, connection information is available in the request context
+                # We'll extract it from the first argument which should be the request object
+                request = args[0] if args else None
+                
+                # Extract connection metadata from request
+                connection_data = {}
+                
+                # Check if we have a request object with connection info
+                if request and hasattr(request, 'context') and hasattr(request.context, 'connection_info'):
+                    # Extract connection info from FastMCP request context
+                    conn_info = request.context.connection_info
+                    connection_data = {
+                        'remote_address': getattr(conn_info, 'remote_address', ''),
+                        'client_host': getattr(conn_info, 'client_host', ''),
+                        'peer_name': getattr(conn_info, 'peer_name', ''),
+                        'user_agent': getattr(conn_info, 'user_agent', ''),
+                    }
+                    
+                    # Extract API key from headers if available
+                    if hasattr(request.context, 'headers'):
+                        connection_data['api_key'] = request.context.headers.get('X-API-Key', '')
+                else:
+                    # Fallback to environment variables for testing or non-FastMCP contexts
+                    connection_data = {
+                        'remote_address': os.environ.get('MCP_CLIENT_ADDRESS', ''),
+                        'client_host': os.environ.get('MCP_CLIENT_HOST', ''),
+                        'peer_name': os.environ.get('MCP_PEER_NAME', ''),
+                        'user_agent': os.environ.get('MCP_USER_AGENT', ''),
+                        'api_key': os.environ.get('MCP_API_KEY', '')
+                    }
+                
+                # Determine if connection is local
+                is_local = is_local_connection(connection_data)
+                
+                # Create connection info object
+                connection_info = ConnectionInfo(
+                    is_local=is_local,
+                    remote_address=connection_data.get('remote_address'),
+                    api_key=connection_data.get('api_key'),
+                    user_agent=connection_data.get('user_agent')
+                )
+                
+                # Log connection attempt
+                auth_logger.info(
+                    f"Connection attempt to {func.__name__}",
+                    extra={
+                        'operation': 'connection_attempt',
+                        'tool': func.__name__,
+                        'connection_type': connection_info.connection_type,
+                        'remote_address': connection_info.remote_address,
+                        'user_agent': connection_info.user_agent
+                    }
+                )
+                
+                # Authenticate the connection
+                auth_success, auth_error = authenticate_connection(connection_info, server_config)
+                
+                if not auth_success:
+                    auth_logger.warning(f"Authentication failed for tool {func.__name__}")
+                    return auth_error.to_dict() if auth_error else {"error": "Authentication failed"}
+                
+                # Authentication successful, proceed with the original function
+                auth_logger.debug(f"Authentication successful for tool {func.__name__}")
+                return func(*args, **kwargs)
+                
+            except Exception as e:
+                # Handle unexpected errors in authentication middleware
+                auth_logger.error(f"Authentication middleware error for tool {func.__name__}: {e}")
+                error_response = error_handler.handle_authentication_error(e, {
+                    'tool_name': func.__name__,
+                    'operation': 'auth_middleware'
+                })
+                return error_response.to_dict()
+        
+        return wrapper
+    
+    return authenticate_tool
 
 
 def load_configuration() -> Config:
@@ -1482,6 +1812,28 @@ def initialize_server() -> FastMCP:
         # Initialize the MCP server
         server = FastMCP("AI Agnostic Memory Layer")
         
+        # Register MCP tools with authentication middleware
+        init_logger.info("Registering MCP tools with authentication middleware")
+        register_tools(server, server_config)
+        
+        # Log authentication configuration
+        if server_config.api_key:
+            init_logger.info(
+                "API key authentication enabled for remote connections",
+                extra={
+                    'operation': 'auth_config',
+                    'auth_enabled': True
+                }
+            )
+        else:
+            init_logger.warning(
+                "API key authentication is not configured - remote connections will not require authentication",
+                extra={
+                    'operation': 'auth_config',
+                    'auth_enabled': False
+                }
+            )
+        
         init_logger.info(
             "AIAML MCP server initialized successfully",
             extra={
@@ -1490,7 +1842,8 @@ def initialize_server() -> FastMCP:
                 'features': {
                     'git_sync': server_config.enable_git_sync,
                     'authentication': server_config.api_key is not None,
-                    'memory_dir': str(server_config.memory_dir)
+                    'memory_dir': str(server_config.memory_dir),
+                    'remote_connections': True
                 }
             }
         )
@@ -1605,8 +1958,8 @@ def initialize_server() -> FastMCP:
         # Initialize the MCP server
         server = FastMCP("AI Agnostic Memory Layer")
         
-        # Register the tools with the new server instance
-        register_tools(server)
+        # Register the tools with authentication middleware
+        register_tools(server, server_config)
         
         init_logger.info(
             "AIAML MCP server initialized successfully",
@@ -1633,10 +1986,21 @@ def initialize_server() -> FastMCP:
         raise
 
 
-def register_tools(server: FastMCP) -> None:
-    """Register MCP tools with the server instance."""
+def register_tools(server: FastMCP, server_config: Config) -> None:
+    """Register MCP tools with the server instance and authentication middleware."""
+    
+    # Create authentication middleware
+    authenticate = create_authentication_middleware(server_config)
+    
+    # Remove existing tools if they exist (for re-registration)
+    if hasattr(server, 'tools'):
+        tool_names = ['remember', 'think', 'recall']
+        for name in tool_names:
+            if name in server.tools:
+                server.tools.pop(name, None)
     
     @server.tool()
+    @authenticate
     @performance_monitor('remember')
     def remember(agent: str, user: str, topics: List[str], content: str) -> Dict[str, str]:
         """Store a new memory entry with validation and error handling."""
@@ -1658,7 +2022,7 @@ id: {memory_id}
 timestamp: {timestamp}
 agent: {agent}
 user: {user}
-topics: {topics}
+topics: [{', '.join([topic.strip() for topic in topics])}]
 ---
 
 {content}
@@ -1666,6 +2030,9 @@ topics: {topics}
             
             # Store memory atomically
             try:
+                # Ensure memory directory exists
+                MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+                
                 # Write to temporary file first, then rename for atomicity
                 temp_file_path = file_path.with_suffix('.tmp')
                 temp_file_path.write_text(memory_content, encoding='utf-8')
@@ -1725,6 +2092,7 @@ topics: {topics}
             return error_response.to_dict()
 
     @server.tool()
+    @authenticate
     @performance_monitor('think')
     def think(keywords: List[str]) -> List[Dict[str, Any]]:
         """Search for relevant memories by keywords with enhanced error handling."""
@@ -1801,6 +2169,7 @@ topics: {topics}
             return [error_response.to_dict()]
 
     @server.tool()
+    @authenticate
     @performance_monitor('recall')
     def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
         """Retrieve full memory details by ID with comprehensive error handling."""
@@ -1874,6 +2243,17 @@ topics: {topics}
             })
             
             return [error_response.to_dict()]
+            
+    # Log successful tool registration
+    auth_logger = logging.getLogger('aiaml.auth')
+    auth_logger.info(
+        "MCP tools registered with authentication middleware",
+        extra={
+            'operation': 'register_tools',
+            'tools': ['remember', 'think', 'recall'],
+            'auth_enabled': server_config.api_key is not None
+        }
+    )
 
 
 def main():
