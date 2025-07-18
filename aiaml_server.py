@@ -21,6 +21,454 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable
 
 from mcp.server.fastmcp import FastMCP
+from enum import Enum
+
+
+class ErrorCategory(Enum):
+    """Categories of errors for structured error handling."""
+    AUTHENTICATION = "authentication"
+    MEMORY_OPERATION = "memory_operation"
+    GIT_SYNC = "git_sync"
+    CONFIGURATION = "configuration"
+    FILE_IO = "file_io"
+    VALIDATION = "validation"
+    NETWORK = "network"
+    SYSTEM = "system"
+
+
+@dataclass
+class ErrorResponse:
+    """Standardized error response format."""
+    error: str
+    error_code: str
+    message: str
+    timestamp: str
+    category: str
+    context: Optional[Dict[str, Any]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert error response to dictionary format."""
+        result = {
+            "error": self.error,
+            "error_code": self.error_code,
+            "message": self.message,
+            "timestamp": self.timestamp,
+            "category": self.category
+        }
+        if self.context:
+            result["context"] = self.context
+        return result
+
+
+class ErrorHandler:
+    """Enhanced error handling framework with categorized error handling."""
+    
+    def __init__(self):
+        self.logger = logging.getLogger('aiaml.error_handler')
+    
+    def handle_authentication_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle authentication errors with appropriate responses."""
+        context = context or {}
+        
+        # Determine specific error code based on error type and context
+        if "invalid" in str(error).lower() or "unauthorized" in str(error).lower():
+            error_code = "AUTH_INVALID_KEY"
+            message = "The provided API key is invalid"
+        elif "missing" in str(error).lower() or "required" in str(error).lower():
+            error_code = "AUTH_MISSING_KEY"
+            message = "API key is required for remote connections"
+        elif "expired" in str(error).lower():
+            error_code = "AUTH_EXPIRED_KEY"
+            message = "The provided API key has expired"
+        else:
+            error_code = "AUTH_GENERAL_ERROR"
+            message = f"Authentication failed: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="Authentication failed",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.AUTHENTICATION.value,
+            context=context
+        )
+        
+        # Log the authentication error
+        self.logger.error(
+            f"Authentication error: {message}",
+            extra={
+                'operation': 'auth_error',
+                'error_code': error_code,
+                'connection_type': context.get('connection_type'),
+                'remote_address': context.get('remote_address')
+            }
+        )
+        
+        return error_response
+    
+    def handle_memory_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle memory operation errors gracefully."""
+        context = context or {}
+        
+        # Determine specific error code based on error type
+        if isinstance(error, FileNotFoundError):
+            error_code = "MEMORY_NOT_FOUND"
+            message = f"Memory file not found: {context.get('memory_id', 'unknown')}"
+        elif isinstance(error, PermissionError):
+            error_code = "MEMORY_PERMISSION_DENIED"
+            message = "Permission denied accessing memory file"
+        elif isinstance(error, UnicodeDecodeError):
+            error_code = "MEMORY_ENCODING_ERROR"
+            message = "Memory file has encoding issues and cannot be read"
+        elif "corrupted" in str(error).lower() or "invalid" in str(error).lower():
+            error_code = "MEMORY_CORRUPTED"
+            message = "Memory file appears to be corrupted"
+        elif isinstance(error, OSError):
+            error_code = "MEMORY_IO_ERROR"
+            message = f"File system error: {str(error)}"
+        else:
+            error_code = "MEMORY_GENERAL_ERROR"
+            message = f"Memory operation failed: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="Memory operation failed",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.MEMORY_OPERATION.value,
+            context=context
+        )
+        
+        # Log the memory error
+        self.logger.error(
+            f"Memory operation error: {message}",
+            extra={
+                'operation': 'memory_error',
+                'error_code': error_code,
+                'memory_id': context.get('memory_id'),
+                'file_path': context.get('file_path'),
+                'user': context.get('user')
+            }
+        )
+        
+        return error_response
+    
+    def handle_git_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle Git sync errors without affecting main operations."""
+        context = context or {}
+        
+        # Determine specific error code based on error type
+        if isinstance(error, subprocess.CalledProcessError):
+            if error.returncode == 128:
+                error_code = "GIT_REPOSITORY_ERROR"
+                message = "Git repository configuration error"
+            elif error.returncode == 1:
+                error_code = "GIT_COMMAND_ERROR"
+                message = "Git command execution failed"
+            else:
+                error_code = "GIT_PROCESS_ERROR"
+                message = f"Git process failed with return code {error.returncode}"
+        elif isinstance(error, FileNotFoundError):
+            error_code = "GIT_NOT_INSTALLED"
+            message = "Git is not installed or not found in PATH"
+        elif "network" in str(error).lower() or "connection" in str(error).lower():
+            error_code = "GIT_NETWORK_ERROR"
+            message = "Network error during Git synchronization"
+        elif "permission" in str(error).lower() or "access" in str(error).lower():
+            error_code = "GIT_PERMISSION_ERROR"
+            message = "Permission denied during Git operation"
+        else:
+            error_code = "GIT_GENERAL_ERROR"
+            message = f"Git synchronization failed: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="Git synchronization failed",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.GIT_SYNC.value,
+            context=context
+        )
+        
+        # Log the Git error (as warning since it doesn't affect main operations)
+        self.logger.warning(
+            f"Git sync error: {message}",
+            extra={
+                'operation': 'git_error',
+                'error_code': error_code,
+                'memory_id': context.get('memory_id'),
+                'git_command': context.get('git_command'),
+                'return_code': getattr(error, 'returncode', None)
+            }
+        )
+        
+        return error_response
+    
+    def handle_configuration_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle configuration errors with fallbacks."""
+        context = context or {}
+        
+        # Determine specific error code based on error type
+        if "validation" in str(error).lower():
+            error_code = "CONFIG_VALIDATION_ERROR"
+            message = f"Configuration validation failed: {str(error)}"
+        elif "missing" in str(error).lower() or "required" in str(error).lower():
+            error_code = "CONFIG_MISSING_VALUE"
+            message = f"Required configuration value missing: {str(error)}"
+        elif "invalid" in str(error).lower():
+            error_code = "CONFIG_INVALID_VALUE"
+            message = f"Invalid configuration value: {str(error)}"
+        elif isinstance(error, PermissionError):
+            error_code = "CONFIG_PERMISSION_ERROR"
+            message = "Permission denied accessing configuration"
+        else:
+            error_code = "CONFIG_GENERAL_ERROR"
+            message = f"Configuration error: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="Configuration error",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.CONFIGURATION.value,
+            context=context
+        )
+        
+        # Log the configuration error
+        self.logger.error(
+            f"Configuration error: {message}",
+            extra={
+                'operation': 'config_error',
+                'error_code': error_code,
+                'config_key': context.get('config_key')
+            }
+        )
+        
+        return error_response
+    
+    def handle_validation_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle input validation errors."""
+        context = context or {}
+        
+        # Determine specific error code based on error type
+        if "memory_id" in str(error).lower():
+            error_code = "VALIDATION_INVALID_MEMORY_ID"
+            message = "Invalid memory ID format"
+        elif "keywords" in str(error).lower():
+            error_code = "VALIDATION_INVALID_KEYWORDS"
+            message = "Invalid keywords provided"
+        elif "topics" in str(error).lower():
+            error_code = "VALIDATION_INVALID_TOPICS"
+            message = "Invalid topics format"
+        elif "content" in str(error).lower():
+            error_code = "VALIDATION_INVALID_CONTENT"
+            message = "Invalid content provided"
+        else:
+            error_code = "VALIDATION_GENERAL_ERROR"
+            message = f"Input validation failed: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="Validation error",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.VALIDATION.value,
+            context=context
+        )
+        
+        # Log the validation error
+        self.logger.warning(
+            f"Validation error: {message}",
+            extra={
+                'operation': 'validation_error',
+                'error_code': error_code,
+                'field': context.get('field'),
+                'value': context.get('value')
+            }
+        )
+        
+        return error_response
+    
+    def handle_general_error(self, error: Exception, category: ErrorCategory, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle general errors with appropriate categorization."""
+        context = context or {}
+        
+        error_code = f"{category.value.upper()}_GENERAL_ERROR"
+        message = f"{category.value.replace('_', ' ').title()} error: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error=f"{category.value.replace('_', ' ').title()} failed",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=category.value,
+            context=context
+        )
+        
+        # Log the general error
+        self.logger.error(
+            f"General error in {category.value}: {message}",
+            extra={
+                'operation': f'{category.value}_error',
+                'error_code': error_code,
+                'error_type': type(error).__name__
+            }
+        )
+        
+        return error_response
+    
+    def create_success_response(self, operation: str, data: Dict[str, Any], context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Create a standardized success response."""
+        response = {
+            "success": True,
+            "operation": operation,
+            "timestamp": datetime.now().isoformat(),
+            "data": data
+        }
+        
+        if context:
+            response["context"] = context
+        
+        return response
+
+
+# Initialize global error handler
+error_handler = ErrorHandler()
+
+
+def parse_memory_file_safe(file_path: Path) -> Optional[Dict[str, Any]]:
+    """Parse a memory file with comprehensive error handling and graceful recovery."""
+    try:
+        return parse_memory_file(file_path)
+    except Exception as e:
+        # Handle corrupted memory files gracefully
+        error_response = error_handler.handle_memory_error(e, {
+            'file_path': str(file_path),
+            'operation': 'parse_memory_file_safe'
+        })
+        
+        # Log the error but continue processing other files
+        logger = logging.getLogger('aiaml.memory_recovery')
+        logger.warning(
+            f"Skipping corrupted memory file {file_path.name}: {error_response.message}",
+            extra={
+                'operation': 'memory_file_recovery',
+                'file_path': str(file_path),
+                'error_code': error_response.error_code
+            }
+        )
+        
+        return None
+
+
+def validate_memory_input(agent: str, user: str, topics: List[str], content: str) -> Optional[ErrorResponse]:
+    """Validate memory input parameters."""
+    try:
+        # Validate agent
+        if not agent or not isinstance(agent, str) or len(agent.strip()) == 0:
+            raise ValueError("Agent name is required and must be a non-empty string")
+        
+        # Validate user
+        if not user or not isinstance(user, str) or len(user.strip()) == 0:
+            raise ValueError("User identifier is required and must be a non-empty string")
+        
+        # Validate topics
+        if not isinstance(topics, list):
+            raise ValueError("Topics must be a list")
+        
+        for topic in topics:
+            if not isinstance(topic, str) or len(topic.strip()) == 0:
+                raise ValueError("Each topic must be a non-empty string")
+        
+        # Validate content
+        if not content or not isinstance(content, str) or len(content.strip()) == 0:
+            raise ValueError("Content is required and must be a non-empty string")
+        
+        # Additional validation rules
+        if len(agent.strip()) > 50:
+            raise ValueError("Agent name must be 50 characters or less")
+        
+        if len(user.strip()) > 50:
+            raise ValueError("User identifier must be 50 characters or less")
+        
+        if len(topics) > 20:
+            raise ValueError("Maximum 20 topics allowed")
+        
+        for topic in topics:
+            if len(topic.strip()) > 30:
+                raise ValueError("Each topic must be 30 characters or less")
+        
+        if len(content.strip()) > 100000:  # 100KB limit
+            raise ValueError("Content must be 100,000 characters or less")
+        
+        return None
+        
+    except ValueError as e:
+        return error_handler.handle_validation_error(e, {
+            'agent': agent,
+            'user': user,
+            'topics_count': len(topics) if isinstance(topics, list) else 0,
+            'content_length': len(content) if isinstance(content, str) else 0
+        })
+
+
+def validate_search_input(keywords: List[str]) -> Optional[ErrorResponse]:
+    """Validate search input parameters."""
+    try:
+        # Validate keywords
+        if not isinstance(keywords, list):
+            raise ValueError("Keywords must be a list")
+        
+        if len(keywords) == 0:
+            raise ValueError("At least one keyword is required")
+        
+        if len(keywords) > 10:
+            raise ValueError("Maximum 10 keywords allowed")
+        
+        for keyword in keywords:
+            if not isinstance(keyword, str) or len(keyword.strip()) == 0:
+                raise ValueError("Each keyword must be a non-empty string")
+            
+            if len(keyword.strip()) > 50:
+                raise ValueError("Each keyword must be 50 characters or less")
+        
+        return None
+        
+    except ValueError as e:
+        return error_handler.handle_validation_error(e, {
+            'keywords_count': len(keywords) if isinstance(keywords, list) else 0,
+            'keywords': keywords if isinstance(keywords, list) else None
+        })
+
+
+def validate_recall_input(memory_ids: List[str]) -> Optional[ErrorResponse]:
+    """Validate recall input parameters."""
+    try:
+        # Validate memory_ids
+        if not isinstance(memory_ids, list):
+            raise ValueError("Memory IDs must be a list")
+        
+        if len(memory_ids) == 0:
+            raise ValueError("At least one memory ID is required")
+        
+        if len(memory_ids) > 50:
+            raise ValueError("Maximum 50 memory IDs allowed")
+        
+        for memory_id in memory_ids:
+            if not isinstance(memory_id, str) or len(memory_id.strip()) == 0:
+                raise ValueError("Each memory ID must be a non-empty string")
+            
+            # Validate memory ID format (8 character alphanumeric)
+            if not re.match(r'^[a-f0-9]{8}$', memory_id.strip()):
+                raise ValueError(f"Invalid memory ID format: {memory_id}")
+        
+        return None
+        
+    except ValueError as e:
+        return error_handler.handle_validation_error(e, {
+            'memory_ids_count': len(memory_ids) if isinstance(memory_ids, list) else 0,
+            'memory_ids': memory_ids if isinstance(memory_ids, list) else None
+        })
 
 
 @dataclass
@@ -482,25 +930,26 @@ def sync_to_github(memory_id: str, filename: str) -> None:
             # Calculate duration for failed operation
             duration_ms = (time.time() - start_time) * 1000
             
-            # Log detailed error information
+            # Use enhanced error handler for Git errors
             error_context = {
                 'memory_id': memory_id,
                 'filename': filename,
                 'git_command': ' '.join(e.cmd) if e.cmd else 'unknown',
                 'return_code': e.returncode,
                 'stdout': e.stdout.decode() if e.stdout else '',
-                'stderr': e.stderr.decode() if e.stderr else ''
+                'stderr': e.stderr.decode() if e.stderr else '',
+                'duration_ms': round(duration_ms, 2)
             }
             
-            log_operation_error('git_sync', e, error_context)
+            error_response = error_handler.handle_git_error(e, error_context)
             
             git_logger.warning(
-                f"Git sync failed for memory {memory_id}: {e}",
+                f"Git sync failed for memory {memory_id}: {error_response.message}",
                 extra={
                     'operation': 'git_sync_failed',
                     'memory_id': memory_id,
                     'duration_ms': round(duration_ms, 2),
-                    'error_type': 'CalledProcessError',
+                    'error_code': error_response.error_code,
                     'return_code': e.returncode
                 }
             )
@@ -509,20 +958,22 @@ def sync_to_github(memory_id: str, filename: str) -> None:
             # Calculate duration for failed operation
             duration_ms = (time.time() - start_time) * 1000
             
-            # Log unexpected errors
+            # Use enhanced error handler for unexpected Git errors
             error_context = {
                 'memory_id': memory_id,
-                'filename': filename
+                'filename': filename,
+                'duration_ms': round(duration_ms, 2)
             }
             
-            log_operation_error('git_sync', e, error_context)
+            error_response = error_handler.handle_git_error(e, error_context)
             
             git_logger.error(
-                f"Unexpected error during Git sync for memory {memory_id}: {e}",
+                f"Unexpected error during Git sync for memory {memory_id}: {error_response.message}",
                 extra={
                     'operation': 'git_sync_error',
                     'memory_id': memory_id,
                     'duration_ms': round(duration_ms, 2),
+                    'error_code': error_response.error_code,
                     'error_type': type(e).__name__
                 }
             )
@@ -714,7 +1165,7 @@ def search_memories(keywords: List[str]) -> List[Dict[str, Any]]:
     
     for memory_file in MEMORY_DIR.glob("*.md"):
         files_processed += 1
-        memory_data = parse_memory_file(memory_file)
+        memory_data = parse_memory_file_safe(memory_file)
         if not memory_data:
             continue
         
@@ -767,6 +1218,11 @@ def remember(agent: str, user: str, topics: List[str], content: str) -> Dict[str
         Dictionary containing the memory ID and success message
     """
     try:
+        # Validate input parameters
+        validation_error = validate_memory_input(agent, user, topics, content)
+        if validation_error:
+            return validation_error.to_dict()
+        
         # Generate unique memory ID
         memory_id = generate_memory_id()
         
@@ -777,16 +1233,19 @@ def remember(agent: str, user: str, topics: List[str], content: str) -> Dict[str
         frontmatter = f"""---
 id: {memory_id}
 timestamp: {timestamp}
-agent: {agent}
-user: {user}
-topics: [{', '.join(topics)}]
+agent: {agent.strip()}
+user: {user.strip()}
+topics: [{', '.join([topic.strip() for topic in topics])}]
 ---
 
-{content}"""
+{content.strip()}"""
         
         # Create filename and save
         filename = create_memory_filename(memory_id)
         file_path = MEMORY_DIR / filename
+        
+        # Ensure memory directory exists
+        MEMORY_DIR.mkdir(exist_ok=True, parents=True)
         
         file_path.write_text(frontmatter, encoding="utf-8")
         
@@ -799,10 +1258,16 @@ topics: [{', '.join(topics)}]
         }
         
     except Exception as e:
-        return {
-            "memory_id": "",
-            "message": f"Error storing memory: {str(e)}"
-        }
+        # Handle unexpected errors with proper error response
+        error_response = error_handler.handle_memory_error(e, {
+            'operation': 'remember',
+            'agent': agent if isinstance(agent, str) else str(agent),
+            'user': user if isinstance(user, str) else str(user),
+            'topics_count': len(topics) if isinstance(topics, list) else 0,
+            'content_length': len(content) if isinstance(content, str) else 0
+        })
+        
+        return error_response.to_dict()
 
 
 @mcp.tool()
@@ -826,9 +1291,22 @@ def think(keywords: List[str]) -> List[Dict[str, Any]]:
         will have higher relevance scores and appear first.
     """
     try:
+        # Validate input parameters
+        validation_error = validate_search_input(keywords)
+        if validation_error:
+            return [validation_error.to_dict()]
+        
         return search_memories(keywords)
+        
     except Exception as e:
-        return [{"error": f"Search failed: {str(e)}"}]
+        # Handle unexpected errors with proper error response
+        error_response = error_handler.handle_memory_error(e, {
+            'operation': 'think',
+            'keywords': keywords if isinstance(keywords, list) else str(keywords),
+            'keywords_count': len(keywords) if isinstance(keywords, list) else 0
+        })
+        
+        return [error_response.to_dict()]
 
 
 @mcp.tool()
@@ -845,36 +1323,62 @@ def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
     Returns:
         List of complete memory objects with agent, user, topics, and content
     """
-    results = []
-    
     try:
+        # Validate input parameters
+        validation_error = validate_recall_input(memory_ids)
+        if validation_error:
+            return [validation_error.to_dict()]
+        
+        results = []
+        
         for memory_id in memory_ids:
-            # Find the memory file by ID
-            found = False
-            for memory_file in MEMORY_DIR.glob(f"*_{memory_id}.md"):
-                memory_data = parse_memory_file(memory_file)
-                if memory_data and memory_data["id"] == memory_id:
-                    results.append({
-                        "id": memory_data["id"],
-                        "timestamp": memory_data["timestamp"],
-                        "agent": memory_data["agent"],
-                        "user": memory_data["user"],
-                        "topics": memory_data["topics"],
-                        "content": memory_data["content"]
-                    })
-                    found = True
-                    break
-            
-            if not found:
-                results.append({
-                    "id": memory_id,
-                    "error": f"Memory with ID {memory_id} not found"
+            try:
+                # Find the memory file by ID
+                found = False
+                for memory_file in MEMORY_DIR.glob(f"*_{memory_id.strip()}.md"):
+                    memory_data = parse_memory_file_safe(memory_file)
+                    if memory_data and memory_data["id"] == memory_id.strip():
+                        results.append({
+                            "id": memory_data["id"],
+                            "timestamp": memory_data["timestamp"],
+                            "agent": memory_data["agent"],
+                            "user": memory_data["user"],
+                            "topics": memory_data["topics"],
+                            "content": memory_data["content"]
+                        })
+                        found = True
+                        break
+                
+                if not found:
+                    # Create a specific error response for not found memory
+                    not_found_error = error_handler.handle_memory_error(
+                        FileNotFoundError(f"Memory with ID {memory_id} not found"),
+                        {
+                            'memory_id': memory_id,
+                            'operation': 'recall'
+                        }
+                    )
+                    results.append(not_found_error.to_dict())
+                    
+            except Exception as e:
+                # Handle individual memory retrieval errors
+                memory_error = error_handler.handle_memory_error(e, {
+                    'memory_id': memory_id,
+                    'operation': 'recall_individual'
                 })
+                results.append(memory_error.to_dict())
+        
+        return results
                 
     except Exception as e:
-        results.append({"error": f"Recall failed: {str(e)}"})
-    
-    return results
+        # Handle unexpected errors with proper error response
+        error_response = error_handler.handle_memory_error(e, {
+            'operation': 'recall',
+            'memory_ids': memory_ids if isinstance(memory_ids, list) else str(memory_ids),
+            'memory_ids_count': len(memory_ids) if isinstance(memory_ids, list) else 0
+        })
+        
+        return [error_response.to_dict()]
 
 
 def main():
