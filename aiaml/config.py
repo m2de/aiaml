@@ -1,0 +1,110 @@
+"""Configuration management for AIAML server."""
+
+import os
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, List
+
+
+@dataclass
+class Config:
+    """Configuration class for AIAML server with validation and defaults."""
+    
+    # Authentication
+    api_key: Optional[str] = None
+    
+    # Git synchronization
+    enable_git_sync: bool = True
+    git_remote_url: Optional[str] = None
+    git_retry_attempts: int = 3
+    git_retry_delay: float = 1.0
+    
+    # Storage
+    memory_dir: Path = field(default_factory=lambda: Path("memory/files"))
+    
+    # Logging
+    log_level: str = "INFO"
+    
+    # Performance
+    max_search_results: int = 25
+    
+    # Network configuration for remote connections
+    host: str = "127.0.0.1"
+    port: int = 8000
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        # Convert string path to Path object if needed
+        if isinstance(self.memory_dir, str):
+            self.memory_dir = Path(self.memory_dir)
+        
+        # Validate log level
+        valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if self.log_level.upper() not in valid_log_levels:
+            raise ValueError(f"Invalid log level: {self.log_level}. Must be one of {valid_log_levels}")
+        
+        # Validate retry attempts
+        if self.git_retry_attempts < 0:
+            raise ValueError("git_retry_attempts must be non-negative")
+        
+        # Validate retry delay
+        if self.git_retry_delay < 0:
+            raise ValueError("git_retry_delay must be non-negative")
+        
+        # Validate max search results
+        if self.max_search_results <= 0:
+            raise ValueError("max_search_results must be positive")
+        
+        # Validate network configuration
+        if not isinstance(self.port, int) or self.port < 1 or self.port > 65535:
+            raise ValueError(f"Invalid port number: {self.port}. Must be between 1 and 65535")
+        
+        # Validate host format (basic validation)
+        if not self.host or not isinstance(self.host, str):
+            raise ValueError("Host must be a non-empty string")
+
+
+def load_configuration() -> Config:
+    """Load configuration from environment variables with sensible defaults."""
+    try:
+        return Config(
+            api_key=os.getenv("AIAML_API_KEY"),
+            enable_git_sync=os.getenv("AIAML_ENABLE_SYNC", "true").lower() == "true",
+            git_remote_url=os.getenv("AIAML_GITHUB_REMOTE"),
+            memory_dir=Path(os.getenv("AIAML_MEMORY_DIR", "memory/files")),
+            log_level=os.getenv("AIAML_LOG_LEVEL", "INFO").upper(),
+            max_search_results=int(os.getenv("AIAML_MAX_SEARCH_RESULTS", "25")),
+            host=os.getenv("AIAML_HOST", "127.0.0.1"),
+            port=int(os.getenv("AIAML_PORT", "8000"))
+        )
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Configuration error: {e}")
+
+
+def validate_configuration(config: Config) -> List[str]:
+    """Validate configuration and return any errors or warnings."""
+    errors = []
+    
+    # Check memory directory permissions
+    try:
+        config.memory_dir.mkdir(parents=True, exist_ok=True)
+        # Test write permissions
+        test_file = config.memory_dir / ".test_write"
+        test_file.write_text("test")
+        test_file.unlink()
+    except PermissionError:
+        errors.append(f"ERROR: No write permission for memory directory: {config.memory_dir}")
+    except Exception as e:
+        errors.append(f"ERROR: Cannot access memory directory {config.memory_dir}: {e}")
+    
+    # Validate Git configuration
+    if config.enable_git_sync:
+        if config.git_remote_url and not config.git_remote_url.startswith(("http://", "https://", "git@")):
+            errors.append(f"WARNING: Git remote URL may be invalid: {config.git_remote_url}")
+    
+    # Validate authentication setup
+    if not config.api_key:
+        errors.append("WARNING: No API key configured - remote connections will not require authentication")
+    
+    return errors
