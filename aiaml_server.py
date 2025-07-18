@@ -12,23 +12,166 @@ import uuid
 import threading
 import subprocess
 import os
+import logging
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
+
+@dataclass
+class Config:
+    """Configuration class for AIAML server with validation and defaults."""
+    
+    # Authentication
+    api_key: Optional[str] = None
+    
+    # Git synchronization
+    enable_git_sync: bool = True
+    git_remote_url: Optional[str] = None
+    git_retry_attempts: int = 3
+    git_retry_delay: float = 1.0
+    
+    # Storage
+    memory_dir: Path = field(default_factory=lambda: Path("memory/files"))
+    
+    # Logging
+    log_level: str = "INFO"
+    
+    # Performance
+    max_search_results: int = 25
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        # Convert string path to Path object if needed
+        if isinstance(self.memory_dir, str):
+            self.memory_dir = Path(self.memory_dir)
+        
+        # Validate log level
+        valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if self.log_level.upper() not in valid_log_levels:
+            raise ValueError(f"Invalid log level: {self.log_level}. Must be one of {valid_log_levels}")
+        
+        # Validate retry attempts
+        if self.git_retry_attempts < 0:
+            raise ValueError("git_retry_attempts must be non-negative")
+        
+        # Validate retry delay
+        if self.git_retry_delay < 0:
+            raise ValueError("git_retry_delay must be non-negative")
+        
+        # Validate max search results
+        if self.max_search_results <= 0:
+            raise ValueError("max_search_results must be positive")
+
+
+def load_configuration() -> Config:
+    """Load configuration from environment variables with sensible defaults."""
+    try:
+        config = Config(
+            api_key=os.getenv("AIAML_API_KEY"),
+            enable_git_sync=os.getenv("AIAML_ENABLE_SYNC", "false").lower() == "true",
+            git_remote_url=os.getenv("AIAML_GITHUB_REMOTE"),
+            git_retry_attempts=int(os.getenv("AIAML_GIT_RETRY_ATTEMPTS", "3")),
+            git_retry_delay=float(os.getenv("AIAML_GIT_RETRY_DELAY", "1.0")),
+            memory_dir=Path(os.getenv("AIAML_MEMORY_DIR", "memory/files")),
+            log_level=os.getenv("AIAML_LOG_LEVEL", "INFO").upper(),
+            max_search_results=int(os.getenv("AIAML_MAX_SEARCH_RESULTS", "25"))
+        )
+        return config
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Configuration error: {e}")
+
+
+def validate_configuration(config: Config) -> List[str]:
+    """Validate configuration and return any errors or warnings."""
+    errors = []
+    warnings = []
+    
+    # Check if memory directory is accessible
+    try:
+        config.memory_dir.mkdir(exist_ok=True, parents=True)
+        if not config.memory_dir.is_dir():
+            errors.append(f"Memory directory is not accessible: {config.memory_dir}")
+    except Exception as e:
+        errors.append(f"Cannot create memory directory {config.memory_dir}: {e}")
+    
+    # Check Git configuration
+    if config.enable_git_sync:
+        if not config.git_remote_url:
+            warnings.append("Git sync is enabled but no remote URL is configured (AIAML_GITHUB_REMOTE)")
+        
+        # Check if git is available
+        try:
+            subprocess.run(["git", "--version"], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            errors.append("Git sync is enabled but git command is not available")
+    
+    # Check API key for security
+    if config.api_key and len(config.api_key) < 16:
+        warnings.append("API key is shorter than recommended minimum of 16 characters")
+    
+    # Combine errors and warnings
+    all_issues = []
+    all_issues.extend([f"ERROR: {error}" for error in errors])
+    all_issues.extend([f"WARNING: {warning}" for warning in warnings])
+    
+    return all_issues
+
+
+def setup_logging(config: Config) -> None:
+    """Setup logging configuration based on config."""
+    logging.basicConfig(
+        level=getattr(logging, config.log_level),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+
+# Load and validate configuration
+try:
+    config = load_configuration()
+    validation_issues = validate_configuration(config)
+    
+    # Setup logging
+    setup_logging(config)
+    logger = logging.getLogger(__name__)
+    
+    # Log configuration issues
+    for issue in validation_issues:
+        if issue.startswith("ERROR:"):
+            logger.error(issue[7:])  # Remove "ERROR: " prefix
+        elif issue.startswith("WARNING:"):
+            logger.warning(issue[9:])  # Remove "WARNING: " prefix
+    
+    # Exit if there are critical errors
+    error_count = sum(1 for issue in validation_issues if issue.startswith("ERROR:"))
+    if error_count > 0:
+        logger.critical(f"Configuration validation failed with {error_count} error(s). Exiting.")
+        exit(1)
+    
+    logger.info("Configuration loaded successfully")
+    logger.debug(f"Memory directory: {config.memory_dir}")
+    logger.debug(f"Git sync enabled: {config.enable_git_sync}")
+    logger.debug(f"Log level: {config.log_level}")
+    
+except Exception as e:
+    # Fallback logging setup for configuration errors
+    logging.basicConfig(level=logging.ERROR)
+    logger = logging.getLogger(__name__)
+    logger.critical(f"Failed to load configuration: {e}")
+    exit(1)
+
 # Initialize the MCP server
 mcp = FastMCP("AI Agnostic Memory Layer")
 
-# Memory storage directory
-MEMORY_DIR = Path(__file__).parent / "memory" / "files"
-MEMORY_DIR.mkdir(exist_ok=True, parents=True)
-
-# Memory backup configuration
-MEMORY_BACKUP_DIR = Path(__file__).parent / "memory"
-ENABLE_GITHUB_SYNC = os.getenv("AIAML_ENABLE_SYNC", "true").lower() == "true"
-GITHUB_REMOTE_URL = os.getenv("AIAML_GITHUB_REMOTE", "")
+# Legacy compatibility - maintain existing global variables for backward compatibility
+MEMORY_DIR = config.memory_dir
+MEMORY_BACKUP_DIR = config.memory_dir.parent
+ENABLE_GITHUB_SYNC = config.enable_git_sync
+GITHUB_REMOTE_URL = config.git_remote_url or ""
 
 
 def generate_memory_id() -> str:
@@ -215,8 +358,8 @@ def search_memories(keywords: List[str]) -> List[Dict[str, Any]]:
     # Sort by relevance score (descending), then by timestamp (most recent first) as tiebreaker
     results.sort(key=lambda x: (x["relevance_score"], x["timestamp"]), reverse=True)
     
-    # Limit to maximum 25 results
-    return results[:25]
+    # Limit to configured maximum results
+    return results[:config.max_search_results]
 
 
 @mcp.tool()
@@ -342,6 +485,17 @@ def recall(memory_ids: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def main():
+    """Main entry point for the AIAML server package."""
+    try:
+        logger.info("Starting AIAML MCP server...")
+        mcp.run()
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    except Exception as e:
+        logger.critical(f"Server failed to start: {e}")
+        exit(1)
+
+
 if __name__ == "__main__":
-    # Run the MCP server
-    mcp.run()
+    main()
