@@ -6,6 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load .env file if it exists
+except ImportError:
+    # python-dotenv not available, continue without it
+    pass
+
 
 @dataclass
 class Config:
