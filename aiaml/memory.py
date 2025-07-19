@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import threading
 import time
 import uuid
@@ -519,68 +518,9 @@ def recall_memories(memory_ids: List[str], config: Config) -> List[Dict[str, Any
         return [error_response.to_dict()]
 
 
-def sync_to_github(memory_id: str, filename: str) -> None:
-    """
-    Sync a new memory file to GitHub repository in the background.
-    
-    This function runs in a separate thread and handles Git operations
-    with retry logic and comprehensive error handling.
-    """
-    logger = logging.getLogger('aiaml.git_sync')
-    
-    try:
-        # Get the memory directory parent (should contain .git)
-        memory_dir = Path("memory")
-        git_dir = memory_dir / ".git"
-        
-        if not git_dir.exists():
-            logger.warning("Git repository not initialized, skipping sync")
-            return
-        
-        # Add the new file to Git
-        try:
-            subprocess.run(
-                ["git", "add", f"files/{filename}"],
-                check=True,
-                capture_output=True,
-                cwd=memory_dir,
-                timeout=30
-            )
-            
-            # Commit the new memory
-            commit_message = f"Add memory {memory_id}"
-            subprocess.run(
-                ["git", "commit", "-m", commit_message],
-                check=True,
-                capture_output=True,
-                cwd=memory_dir,
-                timeout=30
-            )
-            
-            # Push to remote if configured
-            remote_url = os.getenv("AIAML_GITHUB_REMOTE")
-            if remote_url:
-                try:
-                    subprocess.run(
-                        ["git", "push", "origin", "main"],
-                        check=True,
-                        capture_output=True,
-                        cwd=memory_dir,
-                        timeout=60
-                    )
-                    logger.info(f"Memory {memory_id} synced to GitHub successfully")
-                except subprocess.CalledProcessError as e:
-                    logger.warning(f"Failed to push memory {memory_id} to GitHub: {e}")
-            else:
-                logger.debug(f"Memory {memory_id} committed locally (no remote configured)")
-                
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"Git operation failed for memory {memory_id}: {e}")
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Git operation timed out for memory {memory_id}")
-            
-    except Exception as e:
-        logger.error(f"Unexpected error during Git sync for memory {memory_id}: {e}")
+# Git sync functionality is now handled by GitSyncManager in git_sync.py
+# This import provides backward compatibility
+from .git_sync import sync_memory_to_git
 
 
 def validate_memory_input(agent: str, user: str, topics: List[str], content: str) -> Optional[ErrorResponse]:
@@ -855,11 +795,7 @@ topics: {json.dumps(topics)}
             
             # Sync to Git in background if enabled
             if config.enable_git_sync:
-                threading.Thread(
-                    target=sync_to_github,
-                    args=(memory_id, filename),
-                    daemon=True
-                ).start()
+                sync_memory_to_git(memory_id, filename, config)
             
             return {
                 "memory_id": memory_id,

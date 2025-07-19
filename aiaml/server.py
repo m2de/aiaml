@@ -1,7 +1,6 @@
 """Main server implementation for AIAML MCP server."""
 
 import logging
-import subprocess
 import sys
 import threading
 import time
@@ -204,52 +203,28 @@ def initialize_server() -> FastMCP:
             init_logger.error(f"Failed to create memory directory: {e}")
             raise
         
-        # Initialize Git repository if Git sync is enabled
+        # Initialize Git synchronization manager if Git sync is enabled
         if server_config.enable_git_sync:
             try:
-                git_repo_dir = server_config.memory_dir.parent
-                git_dir = git_repo_dir / ".git"
+                from .git_sync import get_git_sync_manager
+                git_manager = get_git_sync_manager(server_config)
                 
-                if not git_dir.exists():
-                    init_logger.info("Initializing Git repository for memory synchronization")
-                    subprocess.run(
-                        ["git", "init"],
-                        check=True,
-                        capture_output=True,
-                        cwd=git_repo_dir
+                if git_manager.is_initialized():
+                    init_logger.info("Git synchronization manager initialized successfully")
+                    
+                    # Log repository status
+                    status = git_manager.get_repository_status()
+                    init_logger.info(
+                        f"Git sync status: repository_exists={status['repository_exists']}, "
+                        f"remote_configured={status['remote_configured']}"
                     )
-                    init_logger.info("Git repository initialized successfully")
-                
-                # Configure Git remote if specified
-                if server_config.git_remote_url:
-                    try:
-                        # Check if remote already exists
-                        result = subprocess.run(
-                            ["git", "remote", "get-url", "origin"],
-                            capture_output=True,
-                            cwd=git_repo_dir,
-                            text=True
-                        )
-                        
-                        if result.returncode != 0:
-                            # Add remote if it doesn't exist
-                            subprocess.run(
-                                ["git", "remote", "add", "origin", server_config.git_remote_url],
-                                check=True,
-                                capture_output=True,
-                                cwd=git_repo_dir
-                            )
-                            init_logger.info(f"Git remote configured: {server_config.git_remote_url}")
-                        else:
-                            init_logger.debug("Git remote already configured")
-                            
-                    except subprocess.CalledProcessError as e:
-                        init_logger.warning(f"Failed to configure Git remote: {e}")
-                        
-            except subprocess.CalledProcessError as e:
-                init_logger.warning(f"Git repository initialization failed: {e}")
+                else:
+                    init_logger.warning("Git synchronization manager initialization failed")
+                    
             except FileNotFoundError:
                 init_logger.warning("Git command not found - Git sync will be disabled")
+            except Exception as e:
+                init_logger.warning(f"Git synchronization manager initialization failed: {e}")
         
         # Initialize the MCP server with remote connection support
         init_logger.info("Initializing MCP server with remote connection support")
