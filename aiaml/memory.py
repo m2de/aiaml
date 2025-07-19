@@ -1,19 +1,22 @@
 """Memory storage and retrieval operations for AIAML."""
 
 import json
-import re
-import uuid
-import threading
-import subprocess
-import os
 import logging
+import os
+import re
+import subprocess
+import threading
 import time
+import uuid
+import tempfile
+import fcntl
+import errno
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .config import Config
-from .errors import error_handler, ErrorResponse
+from .errors import ErrorResponse, error_handler, ErrorCategory
 
 
 def generate_memory_id() -> str:
@@ -105,57 +108,6 @@ def parse_memory_file_safe(file_path: Path) -> Optional[Dict[str, Any]]:
         
         return None
 
-
-def store_memory(agent: str, user: str, topics: List[str], content: str, config: Config) -> Dict[str, Any]:
-    """Store a new memory with atomic file operations."""
-    try:
-        # Generate unique memory ID and filename
-        memory_id = generate_memory_id()
-        filename = create_memory_filename(memory_id)
-        file_path = config.memory_dir / filename
-        
-        # Create memory metadata
-        timestamp = datetime.now().isoformat()
-        
-        # Create memory file content with frontmatter
-        memory_content = f"""---
-id: {memory_id}
-timestamp: {timestamp}
-agent: {agent}
-user: {user}
-topics: {json.dumps(topics)}
----
-
-{content}"""
-        
-        # Write file atomically
-        temp_path = file_path.with_suffix('.tmp')
-        temp_path.write_text(memory_content, encoding='utf-8')
-        temp_path.rename(file_path)
-        
-        # Sync to Git in background if enabled
-        if config.enable_git_sync:
-            threading.Thread(
-                target=sync_to_github,
-                args=(memory_id, filename),
-                daemon=True
-            ).start()
-        
-        return {
-            "memory_id": memory_id,
-            "message": f"Memory stored successfully with ID: {memory_id}",
-            "timestamp": timestamp,
-            "filename": filename
-        }
-        
-    except Exception as e:
-        error_response = error_handler.handle_memory_error(e, {
-            'operation': 'store_memory',
-            'agent': agent,
-            'user': user,
-            'topics': topics
-        })
-        return error_response.to_dict()
 
 
 def search_memories(keywords: List[str], config: Config) -> List[Dict[str, Any]]:
@@ -436,3 +388,233 @@ def validate_recall_input(memory_ids: List[str]) -> Optional[ErrorResponse]:
             'memory_ids_count': len(memory_ids) if isinstance(memory_ids, list) else 0,
             'memory_ids': memory_ids if isinstance(memory_ids, list) else None
         })
+def acquire_file_lock(lock_file_path: Path, timeout: int = 10) -> Optional[int]:
+    """
+    Acquire an exclusive lock on a file with timeout.
+    
+    Args:
+        lock_file_path: Path to the lock file
+        timeout: Maximum time to wait for lock in seconds
+        
+    Returns:
+        File descriptor if lock acquired, None if failed
+    """
+    try:
+        # Create lock file if it doesn't exist
+        if not lock_file_path.exists():
+            lock_file_path.touch()
+            
+        # Open the lock file
+        lock_fd = os.open(str(lock_file_path), os.O_RDWR)
+        
+        # Try to acquire the lock with timeout
+        start_time = datetime.now()
+        while (datetime.now() - start_time).total_seconds() < timeout:
+            try:
+                # Try non-blocking lock
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return lock_fd  # Lock acquired
+            except (IOError, OSError) as e:
+                # Check if it's a "would block" error
+                if e.errno != errno.EWOULDBLOCK:
+                    os.close(lock_fd)
+                    raise
+                # Wait a bit before retrying
+                time.sleep(0.1)
+        
+        # Timeout reached
+        os.close(lock_fd)
+        return None
+        
+    except Exception as e:
+        logger = logging.getLogger('aiaml.memory')
+        logger.error(f"Failed to acquire file lock: {e}")
+        if 'lock_fd' in locals():
+            try:
+                os.close(lock_fd)
+            except:
+                pass
+        return None
+
+
+def release_file_lock(lock_fd: int) -> bool:
+    """
+    Release a previously acquired file lock.
+    
+    Args:
+        lock_fd: File descriptor returned by acquire_file_lock
+        
+    Returns:
+        True if lock released successfully, False otherwise
+    """
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        return True
+    except Exception as e:
+        logger = logging.getLogger('aiaml.memory')
+        logger.error(f"Failed to release file lock: {e}")
+        return False
+
+
+def store_memory_atomic(agent: str, user: str, topics: List[str], content: str, config: Config) -> Dict[str, Any]:
+    """
+    Store a new memory with atomic file operations and file locking to prevent concurrent write conflicts.
+    
+    This function implements:
+    1. File locking to prevent concurrent write conflicts
+    2. Temporary file creation in a secure manner
+    3. Atomic rename to ensure file consistency
+    4. Comprehensive error handling for all storage operations
+    
+    Args:
+        agent: Name of the agent creating the memory
+        user: User identifier
+        topics: List of topics for the memory
+        content: Memory content text
+        config: Server configuration
+        
+    Returns:
+        Dictionary with operation result
+    """
+    logger = logging.getLogger('aiaml.memory')
+    lock_fd = None
+    temp_file = None
+    
+    try:
+        # Validate input parameters
+        validation_error = validate_memory_input(agent, user, topics, content)
+        if validation_error:
+            return validation_error.to_dict()
+        
+        # Generate unique memory ID and filename
+        memory_id = generate_memory_id()
+        filename = create_memory_filename(memory_id)
+        file_path = config.memory_dir / filename
+        
+        # Ensure memory directory exists
+        config.memory_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create lock file path
+        lock_file_path = config.memory_dir / ".memory_lock"
+        
+        # Acquire lock with timeout
+        logger.debug(f"Attempting to acquire lock for memory storage: {memory_id}")
+        lock_fd = acquire_file_lock(lock_file_path)
+        if lock_fd is None:
+            error_msg = "Failed to acquire lock for memory storage (timeout)"
+            logger.error(error_msg)
+            error_response = ErrorResponse(
+                error="Memory storage failed",
+                error_code="MEMORY_LOCK_TIMEOUT",
+                message=error_msg,
+                timestamp=datetime.now().isoformat(),
+                category=ErrorCategory.MEMORY_OPERATION.value,
+                context={
+                    'memory_id': memory_id,
+                    'operation': 'store_memory_atomic'
+                }
+            )
+            return error_response.to_dict()
+        
+        logger.debug(f"Lock acquired for memory storage: {memory_id}")
+        
+        # Create memory metadata
+        timestamp = datetime.now().isoformat()
+        
+        # Create memory file content with frontmatter
+        memory_content = f"""---
+id: {memory_id}
+timestamp: {timestamp}
+agent: {agent}
+user: {user}
+topics: {json.dumps(topics)}
+---
+
+{content}"""
+        
+        # Create a secure temporary file in the same directory
+        try:
+            # Use tempfile for secure temporary file creation
+            fd, temp_path = tempfile.mkstemp(dir=str(config.memory_dir), suffix='.tmp')
+            temp_file = Path(temp_path)
+            
+            # Write content to temporary file
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(memory_content)
+                # Ensure data is written to disk
+                f.flush()
+                os.fsync(fd)
+            
+            # Perform atomic rename
+            temp_file.rename(file_path)
+            logger.debug(f"Memory file created successfully: {file_path}")
+            
+            # Sync to Git in background if enabled
+            if config.enable_git_sync:
+                threading.Thread(
+                    target=sync_to_github,
+                    args=(memory_id, filename),
+                    daemon=True
+                ).start()
+            
+            return {
+                "memory_id": memory_id,
+                "message": f"Memory stored successfully with ID: {memory_id}",
+                "timestamp": timestamp,
+                "filename": filename
+            }
+            
+        except Exception as e:
+            # Handle specific file operation errors
+            if isinstance(e, PermissionError):
+                error_code = "MEMORY_PERMISSION_DENIED"
+                message = f"Permission denied when writing memory file: {e}"
+            elif isinstance(e, OSError) and e.errno == errno.ENOSPC:
+                error_code = "MEMORY_NO_SPACE"
+                message = "No space left on device for memory storage"
+            elif isinstance(e, OSError):
+                error_code = "MEMORY_IO_ERROR"
+                message = f"File system error during memory storage: {e}"
+            else:
+                error_code = "MEMORY_STORAGE_ERROR"
+                message = f"Failed to store memory: {e}"
+            
+            logger.error(message, exc_info=True)
+            error_response = ErrorResponse(
+                error="Memory storage failed",
+                error_code=error_code,
+                message=message,
+                timestamp=datetime.now().isoformat(),
+                category=ErrorCategory.MEMORY_OPERATION.value,
+                context={
+                    'memory_id': memory_id,
+                    'operation': 'store_memory_atomic',
+                    'file_path': str(file_path)
+                }
+            )
+            return error_response.to_dict()
+            
+    except Exception as e:
+        # Handle unexpected errors
+        logger.error(f"Unexpected error in store_memory_atomic: {e}", exc_info=True)
+        error_response = error_handler.handle_memory_error(e, {
+            'operation': 'store_memory_atomic',
+            'agent': agent,
+            'user': user,
+            'topics': topics
+        })
+        return error_response.to_dict()
+        
+    finally:
+        # Always release lock and clean up temporary file if needed
+        if lock_fd is not None:
+            release_file_lock(lock_fd)
+            logger.debug("Released memory storage lock")
+            
+        # Clean up temporary file if it still exists
+        if temp_file is not None and temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary file {temp_file}: {e}")

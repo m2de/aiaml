@@ -13,7 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from .config import Config, load_configuration, validate_configuration
 from .auth import create_authentication_middleware, connection_manager
 from .memory import (
-    store_memory, search_memories, recall_memories,
+    store_memory_atomic, search_memories, recall_memories,
     validate_memory_input, validate_search_input, validate_recall_input
 )
 from .errors import error_handler
@@ -86,8 +86,8 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         if validation_error:
             return validation_error.to_dict()
         
-        # Store the memory
-        return store_memory(agent, user, topics, content, server_config)
+        # Store the memory using atomic operations
+        return store_memory_atomic(agent, user, topics, content, server_config)
     
     @server.tool()
     @auth_middleware
