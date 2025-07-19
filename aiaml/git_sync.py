@@ -48,8 +48,9 @@ class GitSyncManager:
         self._sync_lock = threading.Lock()
         self._initialized = False
         
-        # Git repository directory (parent of memory directory)
-        self.git_repo_dir = config.memory_dir.parent
+        # Git repository directory (the memory directory itself contains the git repo)
+        # config.memory_dir is "memory/files", so parent is "memory" which contains the .git
+        self.git_repo_dir = config.memory_dir.parent  # This is the memory/ directory
         self.git_dir = self.git_repo_dir / ".git"
         
         # Initialize if Git sync is enabled
