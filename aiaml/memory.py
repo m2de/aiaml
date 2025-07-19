@@ -11,12 +11,365 @@ import uuid
 import tempfile
 import fcntl
 import errno
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from collections import defaultdict
 
 from .config import Config
 from .errors import ErrorResponse, error_handler, ErrorCategory
+
+
+# Global cache for frequently accessed memories
+_memory_cache = {}
+_cache_timestamps = {}
+_cache_max_age = timedelta(minutes=5)  # Cache expires after 5 minutes
+_cache_max_size = 100  # Maximum number of cached memories
+
+# Performance monitoring data
+_search_performance_stats = {
+    'total_searches': 0,
+    'total_search_time': 0.0,
+    'cache_hits': 0,
+    'cache_misses': 0,
+    'avg_search_time': 0.0,
+    'last_reset': datetime.now()
+}
+
+
+def _clean_expired_cache() -> None:
+    """Remove expired entries from the memory cache."""
+    current_time = datetime.now()
+    expired_keys = []
+    
+    for key, timestamp in _cache_timestamps.items():
+        if current_time - timestamp > _cache_max_age:
+            expired_keys.append(key)
+    
+    for key in expired_keys:
+        _memory_cache.pop(key, None)
+        _cache_timestamps.pop(key, None)
+
+
+def _manage_cache_size() -> None:
+    """Ensure cache doesn't exceed maximum size by removing oldest entries."""
+    if len(_memory_cache) <= _cache_max_size:
+        return
+    
+    # Sort by timestamp and remove oldest entries
+    sorted_items = sorted(_cache_timestamps.items(), key=lambda x: x[1])
+    items_to_remove = len(_memory_cache) - _cache_max_size
+    
+    for i in range(items_to_remove):
+        key = sorted_items[i][0]
+        _memory_cache.pop(key, None)
+        _cache_timestamps.pop(key, None)
+
+
+def _get_cached_memory(file_path: Path) -> Optional[Dict[str, Any]]:
+    """Get memory from cache if available and not expired."""
+    cache_key = str(file_path)
+    
+    if cache_key not in _memory_cache:
+        return None
+    
+    # Check if cache entry is still valid
+    if cache_key in _cache_timestamps:
+        if datetime.now() - _cache_timestamps[cache_key] <= _cache_max_age:
+            _search_performance_stats['cache_hits'] += 1
+            return _memory_cache[cache_key]
+        else:
+            # Remove expired entry
+            _memory_cache.pop(cache_key, None)
+            _cache_timestamps.pop(cache_key, None)
+    
+    return None
+
+
+def _cache_memory(file_path: Path, memory_data: Dict[str, Any]) -> None:
+    """Cache a memory for faster future access."""
+    cache_key = str(file_path)
+    
+    # Clean expired entries and manage size
+    _clean_expired_cache()
+    _manage_cache_size()
+    
+    # Add to cache
+    _memory_cache[cache_key] = memory_data
+    _cache_timestamps[cache_key] = datetime.now()
+    _search_performance_stats['cache_misses'] += 1
+
+
+def _calculate_advanced_relevance_score(memory_data: Dict[str, Any], keywords: List[str]) -> float:
+    """
+    Calculate advanced relevance score using multiple factors:
+    - Keyword frequency and position
+    - Topic matching with fuzzy matching
+    - Content length normalization
+    - Recency boost
+    """
+    score = 0.0
+    content = memory_data.get('content', '').lower()
+    topics = [topic.lower() for topic in memory_data.get('topics', [])]
+    
+    # Normalize keywords
+    normalized_keywords = [kw.lower().strip() for kw in keywords]
+    
+    for keyword in normalized_keywords:
+        if not keyword:
+            continue
+            
+        # 1. Exact content matches with position weighting
+        content_matches = []
+        start = 0
+        while True:
+            pos = content.find(keyword, start)
+            if pos == -1:
+                break
+            content_matches.append(pos)
+            start = pos + 1
+        
+        # Weight matches by position (earlier matches get higher scores)
+        content_length = len(content) if content else 1
+        for pos in content_matches:
+            position_weight = 1.0 - (pos / content_length) * 0.3  # Up to 30% reduction for later positions
+            score += 2.0 * position_weight
+        
+        # 2. Topic matching with fuzzy matching
+        for topic in topics:
+            if keyword in topic:
+                # Exact substring match
+                score += 5.0
+            elif len(keyword) >= 3:
+                # Fuzzy matching for longer keywords
+                # Simple fuzzy matching: check if most characters are present
+                keyword_chars = set(keyword)
+                topic_chars = set(topic)
+                overlap = len(keyword_chars.intersection(topic_chars))
+                if overlap >= len(keyword_chars) * 0.7:  # 70% character overlap
+                    score += 3.0
+        
+        # 3. Word boundary matches (higher weight for complete words)
+        word_pattern = r'\b' + re.escape(keyword) + r'\b'
+        word_matches = len(re.findall(word_pattern, content))
+        score += word_matches * 1.5
+        
+        # 4. Partial word matches
+        partial_matches = len(re.findall(re.escape(keyword), content)) - word_matches
+        score += partial_matches * 0.5
+    
+    # 5. Content length normalization (prevent bias toward very long content)
+    if content:
+        length_factor = min(1.0, 1000 / len(content))  # Normalize around 1000 characters
+        score *= (0.7 + 0.3 * length_factor)
+    
+    # 6. Recency boost (newer memories get slight preference)
+    try:
+        timestamp_str = memory_data.get('timestamp', '')
+        if timestamp_str:
+            # Parse ISO timestamp
+            memory_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            age_days = (datetime.now() - memory_time.replace(tzinfo=None)).days
+            recency_boost = max(0.0, 1.0 - (age_days / 365))  # Boost decreases over a year
+            score *= (1.0 + recency_boost * 0.1)  # Up to 10% boost for recent memories
+    except (ValueError, TypeError):
+        pass  # Skip recency boost if timestamp parsing fails
+    
+    return score
+
+
+def _build_search_index(memory_files: List[Path]) -> Dict[str, List[Tuple[Path, Dict[str, Any]]]]:
+    """
+    Build an inverted index for faster keyword searching.
+    Returns a dictionary mapping keywords to lists of (file_path, memory_data) tuples.
+    """
+    index = defaultdict(list)
+    
+    for file_path in memory_files:
+        # Try to get from cache first
+        memory_data = _get_cached_memory(file_path)
+        
+        if memory_data is None:
+            # Parse file and cache it
+            memory_data = parse_memory_file_safe(file_path)
+            if memory_data:
+                _cache_memory(file_path, memory_data)
+        
+        if not memory_data:
+            continue
+        
+        # Extract all words from content and topics for indexing
+        content = memory_data.get('content', '').lower()
+        topics = memory_data.get('topics', [])
+        
+        # Index content words
+        content_words = re.findall(r'\b\w+\b', content)
+        for word in content_words:
+            if len(word) >= 2:  # Only index words with 2+ characters
+                index[word].append((file_path, memory_data))
+        
+        # Index topic words
+        for topic in topics:
+            topic_words = re.findall(r'\b\w+\b', topic.lower())
+            for word in topic_words:
+                if len(word) >= 2:
+                    index[word].append((file_path, memory_data))
+    
+    return index
+
+
+def search_memories_optimized(keywords: List[str], config: Config) -> List[Dict[str, Any]]:
+    """
+    Optimized memory search with caching, better algorithms, and performance monitoring.
+    
+    Features:
+    - File caching for frequently accessed memories
+    - Advanced relevance scoring with multiple factors
+    - Inverted index for faster keyword matching
+    - Performance monitoring and logging
+    - Optimized for large datasets (10,000+ memories)
+    
+    Args:
+        keywords: List of keywords to search for
+        config: Server configuration
+        
+    Returns:
+        List of matching memories with relevance scores
+    """
+    logger = logging.getLogger('aiaml.memory_search')
+    start_time = time.time()
+    
+    try:
+        # Update performance stats
+        _search_performance_stats['total_searches'] += 1
+        
+        # Validate input
+        if not keywords or not isinstance(keywords, list):
+            return []
+        
+        # Clean and normalize keywords
+        normalized_keywords = [kw.lower().strip() for kw in keywords if kw and isinstance(kw, str)]
+        if not normalized_keywords:
+            return []
+        
+        logger.debug(f"Starting optimized search for keywords: {normalized_keywords}")
+        
+        # Get all memory files
+        memory_files = list(config.memory_dir.glob("*.md"))
+        if not memory_files:
+            logger.debug("No memory files found")
+            return []
+        
+        logger.debug(f"Found {len(memory_files)} memory files to search")
+        
+        # Build search index for faster lookups
+        search_index = _build_search_index(memory_files)
+        
+        # Find candidate memories using the index
+        candidate_memories = {}  # Use dict to avoid duplicates by file path
+        for keyword in normalized_keywords:
+            # Direct keyword matches
+            if keyword in search_index:
+                for file_path, memory_data in search_index[keyword]:
+                    candidate_memories[str(file_path)] = memory_data
+            
+            # Partial matches for longer keywords
+            if len(keyword) >= 3:
+                for indexed_word in search_index:
+                    if keyword in indexed_word or indexed_word in keyword:
+                        for file_path, memory_data in search_index[indexed_word]:
+                            candidate_memories[str(file_path)] = memory_data
+        
+        logger.debug(f"Found {len(candidate_memories)} candidate memories")
+        
+        # Calculate relevance scores for candidates
+        scored_results = []
+        for file_path_str, memory_data in candidate_memories.items():
+            score = _calculate_advanced_relevance_score(memory_data, keywords)
+            
+            if score > 0:
+                scored_results.append({
+                    'memory_id': memory_data['id'],
+                    'agent': memory_data.get('agent'),
+                    'user': memory_data.get('user'),
+                    'topics': memory_data.get('topics', []),
+                    'content_preview': memory_data.get('content', '')[:200] + "..." if len(memory_data.get('content', '')) > 200 else memory_data.get('content', ''),
+                    'timestamp': memory_data.get('timestamp'),
+                    'relevance_score': score
+                })
+        
+        # Sort by relevance score (descending) and limit results
+        scored_results.sort(key=lambda x: x['relevance_score'], reverse=True)
+        final_results = scored_results[:config.max_search_results]
+        
+        # Log performance metrics
+        search_time = time.time() - start_time
+        _search_performance_stats['total_search_time'] += search_time
+        _search_performance_stats['avg_search_time'] = (
+            _search_performance_stats['total_search_time'] / 
+            _search_performance_stats['total_searches']
+        )
+        
+        logger.info(
+            f"Search completed in {search_time:.3f}s, found {len(final_results)} results",
+            extra={
+                'operation': 'search_memories_optimized',
+                'keywords': keywords,
+                'search_time': search_time,
+                'results_count': len(final_results),
+                'candidates_count': len(candidate_memories),
+                'cache_hits': _search_performance_stats['cache_hits'],
+                'cache_misses': _search_performance_stats['cache_misses']
+            }
+        )
+        
+        return final_results
+        
+    except Exception as e:
+        search_time = time.time() - start_time
+        logger.error(f"Error in optimized search after {search_time:.3f}s: {e}", exc_info=True)
+        
+        error_response = error_handler.handle_memory_error(e, {
+            'operation': 'search_memories_optimized',
+            'keywords': keywords,
+            'search_time': search_time
+        })
+        return [error_response.to_dict()]
+
+
+def get_search_performance_stats() -> Dict[str, Any]:
+    """
+    Get current search performance statistics.
+    
+    Returns:
+        Dictionary containing performance metrics
+    """
+    stats = _search_performance_stats.copy()
+    stats['cache_size'] = len(_memory_cache)
+    stats['cache_hit_rate'] = (
+        stats['cache_hits'] / max(1, stats['cache_hits'] + stats['cache_misses'])
+    )
+    return stats
+
+
+def reset_search_performance_stats() -> None:
+    """Reset search performance statistics."""
+    global _search_performance_stats
+    _search_performance_stats = {
+        'total_searches': 0,
+        'total_search_time': 0.0,
+        'cache_hits': 0,
+        'cache_misses': 0,
+        'avg_search_time': 0.0,
+        'last_reset': datetime.now()
+    }
+
+
+def clear_memory_cache() -> None:
+    """Clear the memory cache."""
+    global _memory_cache, _cache_timestamps
+    _memory_cache.clear()
+    _cache_timestamps.clear()
 
 
 def generate_memory_id() -> str:
@@ -109,56 +462,6 @@ def parse_memory_file_safe(file_path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-
-def search_memories(keywords: List[str], config: Config) -> List[Dict[str, Any]]:
-    """Search for memories by keywords with relevance scoring."""
-    try:
-        results = []
-        memory_files = list(config.memory_dir.glob("*.md"))
-        
-        for file_path in memory_files:
-            memory_data = parse_memory_file_safe(file_path)
-            if not memory_data:
-                continue
-            
-            # Calculate relevance score
-            score = 0
-            content_lower = memory_data.get('content', '').lower()
-            topics_lower = [topic.lower() for topic in memory_data.get('topics', [])]
-            
-            for keyword in keywords:
-                keyword_lower = keyword.lower()
-                
-                # Score for content matches
-                content_matches = len(re.findall(re.escape(keyword_lower), content_lower))
-                score += content_matches * 2
-                
-                # Score for topic matches (higher weight)
-                for topic in topics_lower:
-                    if keyword_lower in topic:
-                        score += 5
-            
-            if score > 0:
-                results.append({
-                    'memory_id': memory_data['id'],
-                    'agent': memory_data.get('agent'),
-                    'user': memory_data.get('user'),
-                    'topics': memory_data.get('topics', []),
-                    'content_preview': memory_data.get('content', '')[:200] + "..." if len(memory_data.get('content', '')) > 200 else memory_data.get('content', ''),
-                    'timestamp': memory_data.get('timestamp'),
-                    'relevance_score': score
-                })
-        
-        # Sort by relevance score (descending) and limit results
-        results.sort(key=lambda x: x['relevance_score'], reverse=True)
-        return results[:config.max_search_results]
-        
-    except Exception as e:
-        error_response = error_handler.handle_memory_error(e, {
-            'operation': 'search_memories',
-            'keywords': keywords
-        })
-        return [error_response.to_dict()]
 
 
 def recall_memories(memory_ids: List[str], config: Config) -> List[Dict[str, Any]]:

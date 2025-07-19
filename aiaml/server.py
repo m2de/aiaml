@@ -13,8 +13,9 @@ from mcp.server.fastmcp import FastMCP
 from .config import Config, load_configuration, validate_configuration
 from .auth import create_authentication_middleware, connection_manager
 from .memory import (
-    store_memory_atomic, search_memories, recall_memories,
-    validate_memory_input, validate_search_input, validate_recall_input
+    store_memory_atomic, search_memories_optimized, recall_memories,
+    validate_memory_input, validate_search_input, validate_recall_input,
+    get_search_performance_stats
 )
 from .errors import error_handler
 
@@ -106,8 +107,8 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         if validation_error:
             return [validation_error.to_dict()]
         
-        # Search for memories
-        return search_memories(keywords, server_config)
+        # Search for memories using optimized search
+        return search_memories_optimized(keywords, server_config)
     
     @server.tool()
     @auth_middleware
@@ -129,13 +130,25 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         # Recall memories
         return recall_memories(memory_ids, server_config)
     
+    @server.tool()
+    @auth_middleware
+    def performance_stats() -> dict:
+        """
+        Get search performance statistics and monitoring data.
+        
+        Returns:
+            Dictionary containing performance metrics including search times,
+            cache hit rates, and other optimization statistics
+        """
+        return get_search_performance_stats()
+    
     # Log successful tool registration
     auth_logger = logging.getLogger('aiaml.auth')
     auth_logger.info(
         "MCP tools registered with authentication middleware",
         extra={
             'operation': 'register_tools',
-            'tools': ['remember', 'think', 'recall'],
+            'tools': ['remember', 'think', 'recall', 'performance_stats'],
             'auth_enabled': server_config.api_key is not None
         }
     )
