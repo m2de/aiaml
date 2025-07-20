@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from ..config import Config
+from ..platform import get_platform_info, get_git_executable
 from .utils import GitSyncResult
 from .operations import (
     execute_git_command_with_retry,
@@ -112,14 +113,18 @@ class GitSyncManager:
         try:
             self.logger.info("Initializing new Git repository for memory synchronization")
             
-            # Run git init
+            # Run git init with cross-platform executable
+            git_executable = get_git_executable()
+            platform_info = get_platform_info()
+            
             result = subprocess.run(
-                ["git", "init"],
+                [git_executable, "init"],
                 check=True,
                 capture_output=True,
                 text=True,
                 cwd=self.git_repo_dir,
-                timeout=30
+                timeout=30,
+                shell=platform_info.is_windows
             )
             
             self.logger.info("Git repository initialized successfully")
@@ -176,13 +181,17 @@ class GitSyncManager:
         try:
             self.logger.info(f"Configuring Git remote: {self.config.git_remote_url}")
             
+            git_executable = get_git_executable()
+            platform_info = get_platform_info()
+            
             # Check if remote already exists
             result = subprocess.run(
-                ["git", "remote", "get-url", "origin"],
+                [git_executable, "remote", "get-url", "origin"],
                 capture_output=True,
                 text=True,
                 cwd=self.git_repo_dir,
-                timeout=10
+                timeout=10,
+                shell=platform_info.is_windows
             )
             
             if result.returncode == 0:
@@ -198,21 +207,23 @@ class GitSyncManager:
                 else:
                     # Update existing remote
                     subprocess.run(
-                        ["git", "remote", "set-url", "origin", self.config.git_remote_url],
+                        [git_executable, "remote", "set-url", "origin", self.config.git_remote_url],
                         check=True,
                         capture_output=True,
                         cwd=self.git_repo_dir,
-                        timeout=10
+                        timeout=10,
+                        shell=platform_info.is_windows
                     )
                     self.logger.info(f"Git remote updated to: {self.config.git_remote_url}")
             else:
                 # Add new remote
                 subprocess.run(
-                    ["git", "remote", "add", "origin", self.config.git_remote_url],
+                    [git_executable, "remote", "add", "origin", self.config.git_remote_url],
                     check=True,
                     capture_output=True,
                     cwd=self.git_repo_dir,
-                    timeout=10
+                    timeout=10,
+                    shell=platform_info.is_windows
                 )
                 self.logger.info(f"Git remote added: {self.config.git_remote_url}")
             
@@ -415,12 +426,16 @@ class GitSyncManager:
         try:
             # Check remote configuration
             if self.git_dir.exists():
+                git_executable = get_git_executable()
+                platform_info = get_platform_info()
+                
                 result = subprocess.run(
-                    ["git", "remote", "get-url", "origin"],
+                    [git_executable, "remote", "get-url", "origin"],
                     capture_output=True,
                     text=True,
                     cwd=self.git_repo_dir,
-                    timeout=5
+                    timeout=5,
+                    shell=platform_info.is_windows
                 )
                 
                 if result.returncode == 0:

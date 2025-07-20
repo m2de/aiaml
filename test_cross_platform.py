@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cross-platform test for refactored AIAML code without MCP dependencies."""
 
+import os
 import sys
 import tempfile
 import time
@@ -182,6 +183,97 @@ def test_git_sync_modules():
         return False
 
 
+def test_cross_platform_compatibility():
+    """Test cross-platform compatibility improvements."""
+    print("\nTesting Cross-Platform Compatibility")
+    print("-" * 30)
+    
+    try:
+        # Test platform detection
+        from aiaml.platform import get_platform_info, PlatformType
+        
+        platform_info = get_platform_info()
+        
+        if platform_info.platform_type in [PlatformType.WINDOWS, PlatformType.LINUX, PlatformType.MACOS, PlatformType.UNKNOWN]:
+            print(f"  ✓ Platform detection works: {platform_info.get_platform_name()}")
+        else:
+            print("  ✗ Platform detection failed")
+            return False
+        
+        # Test platform-specific defaults
+        from aiaml.platform import get_platform_specific_defaults
+        
+        defaults = get_platform_specific_defaults()
+        if isinstance(defaults, dict) and 'memory_dir' in defaults:
+            print("  ✓ Platform-specific defaults work")
+        else:
+            print("  ✗ Platform-specific defaults failed")
+            return False
+        
+        # Test Git executable detection
+        from aiaml.platform import get_git_executable, validate_git_availability
+        
+        git_exe = get_git_executable()
+        if git_exe in ['git', 'git.exe']:
+            print(f"  ✓ Git executable detection works: {git_exe}")
+        else:
+            print("  ✗ Git executable detection failed")
+            return False
+        
+        # Test Git availability (may fail if Git not installed, but shouldn't crash)
+        try:
+            git_available, git_error = validate_git_availability()
+            if git_available:
+                print("  ✓ Git availability check works (Git is available)")
+            else:
+                print(f"  ⚠️  Git availability check works (Git not available: {git_error})")
+        except Exception as e:
+            print(f"  ✗ Git availability check failed: {e}")
+            return False
+        
+        # Test file locking
+        from aiaml.file_lock import FileLock
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            lock_file = temp_path / "test.lock"
+            
+            # Test lock acquisition and release
+            file_lock = FileLock(lock_file, timeout=5)
+            if file_lock.acquire():
+                print("  ✓ Cross-platform file locking works")
+                file_lock.release()
+            else:
+                print("  ✗ Cross-platform file locking failed")
+                return False
+        
+        # Test secure temp file creation
+        from aiaml.platform import create_secure_temp_file
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            fd, temp_file_path = create_secure_temp_file(temp_path, suffix='.test')
+            
+            if temp_file_path.exists() and temp_file_path.suffix == '.test':
+                print("  ✓ Cross-platform secure temp file creation works")
+                os.close(fd)
+                temp_file_path.unlink()
+            else:
+                print("  ✗ Cross-platform secure temp file creation failed")
+                if fd:
+                    os.close(fd)
+                return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"  ✗ Cross-platform compatibility test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def test_memory_core_functionality():
     """Test core memory functionality with actual file operations."""
     print("\nTesting Memory Core Functionality")
@@ -311,6 +403,7 @@ def main():
         ("Error Handling", test_error_handling),
         ("Memory Modules", test_memory_modules),
         ("Git Sync Modules", test_git_sync_modules),
+        ("Cross-Platform Compatibility", test_cross_platform_compatibility),
         ("Memory Core", test_memory_core_functionality),
         ("Search Functionality", test_search_functionality)
     ]

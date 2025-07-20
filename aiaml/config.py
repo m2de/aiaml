@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, List
 
+from .platform import get_platform_specific_defaults, get_platform_info
+
 try:
     from dotenv import load_dotenv
     load_dotenv()  # Load .env file if it exists
@@ -73,17 +75,23 @@ class Config:
 
 
 def load_configuration() -> Config:
-    """Load configuration from environment variables with sensible defaults."""
+    """Load configuration from environment variables with platform-specific defaults."""
     try:
+        # Get platform-specific defaults
+        platform_defaults = get_platform_specific_defaults()
+        platform_info = get_platform_info()
+        
         return Config(
             api_key=os.getenv("AIAML_API_KEY"),
             enable_git_sync=os.getenv("AIAML_ENABLE_SYNC", "true").lower() == "true",
             git_remote_url=os.getenv("AIAML_GITHUB_REMOTE"),
-            memory_dir=Path(os.getenv("AIAML_MEMORY_DIR", "memory/files")),
-            log_level=os.getenv("AIAML_LOG_LEVEL", "INFO").upper(),
-            max_search_results=int(os.getenv("AIAML_MAX_SEARCH_RESULTS", "25")),
-            host=os.getenv("AIAML_HOST", "127.0.0.1"),
-            port=int(os.getenv("AIAML_PORT", "8000"))
+            memory_dir=Path(os.getenv("AIAML_MEMORY_DIR", str(platform_defaults['memory_dir']))),
+            log_level=os.getenv("AIAML_LOG_LEVEL", platform_defaults['log_level']).upper(),
+            max_search_results=int(os.getenv("AIAML_MAX_SEARCH_RESULTS", str(platform_defaults['max_search_results']))),
+            host=os.getenv("AIAML_HOST", platform_defaults['host']),
+            port=int(os.getenv("AIAML_PORT", str(platform_defaults['port']))),
+            git_retry_attempts=int(os.getenv("AIAML_GIT_RETRY_ATTEMPTS", str(platform_defaults['git_retry_attempts']))),
+            git_retry_delay=float(os.getenv("AIAML_GIT_RETRY_DELAY", str(platform_defaults['git_retry_delay'])))
         )
     except (ValueError, TypeError) as e:
         raise ValueError(f"Configuration error: {e}")
