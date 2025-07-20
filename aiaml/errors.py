@@ -143,16 +143,16 @@ class ErrorHandler:
         # Determine specific error code based on error type
         if "memory_id" in str(error).lower():
             error_code = "VALIDATION_INVALID_MEMORY_ID"
-            message = "Invalid memory ID format"
+            message = f"Input validation failed: {str(error)}"
         elif "keywords" in str(error).lower():
             error_code = "VALIDATION_INVALID_KEYWORDS"
-            message = "Invalid keywords provided"
+            message = f"Input validation failed: {str(error)}"
         elif "topics" in str(error).lower():
             error_code = "VALIDATION_INVALID_TOPICS"
-            message = "Invalid topics format"
+            message = f"Input validation failed: {str(error)}"
         elif "content" in str(error).lower():
             error_code = "VALIDATION_INVALID_CONTENT"
-            message = "Invalid content provided"
+            message = f"Input validation failed: {str(error)}"
         else:
             error_code = "VALIDATION_GENERAL_ERROR"
             message = f"Input validation failed: {str(error)}"

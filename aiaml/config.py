@@ -98,8 +98,25 @@ def load_configuration() -> Config:
 
 
 def validate_configuration(config: Config) -> List[str]:
-    """Validate configuration and return any errors or warnings."""
+    """Validate configuration and return any errors or warnings with comprehensive validation."""
+    from .memory.validation import validate_configuration_input
+    
     errors = []
+    
+    # Use comprehensive configuration validation
+    config_dict = {
+        'api_key': config.api_key,
+        'memory_dir': str(config.memory_dir),
+        'git_remote_url': config.git_remote_url,
+        'log_level': config.log_level,
+        'host': config.host,
+        'port': config.port
+    }
+    
+    # Get validation errors from the comprehensive validator
+    validation_errors = validate_configuration_input(config_dict)
+    for error in validation_errors:
+        errors.append(f"ERROR: {error}")
     
     # Check memory directory permissions
     try:
@@ -121,5 +138,15 @@ def validate_configuration(config: Config) -> List[str]:
     # Validate authentication setup
     if not config.api_key:
         errors.append("WARNING: No API key configured - remote connections will not require authentication")
+    elif len(config.api_key.strip()) < 8:
+        errors.append("WARNING: API key is shorter than recommended minimum of 8 characters")
+    
+    # Validate network configuration for security
+    if config.host != "127.0.0.1" and config.host != "localhost" and not config.api_key:
+        errors.append("ERROR: Remote connections require API key authentication for security")
+    
+    # Validate file limits and performance settings
+    if config.max_search_results > 100:
+        errors.append("WARNING: High max_search_results may impact performance")
     
     return errors
