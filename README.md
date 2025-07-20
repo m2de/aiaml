@@ -30,16 +30,16 @@ uv run --with "mcp[cli]" mcp run aiaml_server.py
 pip install -r requirements.txt
 
 # Run the server
-python aiaml_server.py
+python3 aiaml_server.py
 ```
 
 ### Option 3: Using virtual environment
 
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-python aiaml_server.py
+python3 aiaml_server.py
 ```
 
 ## Usage
@@ -47,7 +47,7 @@ python aiaml_server.py
 ### Running the Server
 
 ```bash
-python aiaml_server.py
+python3 aiaml_server.py
 ```
 
 ### MCP Tools
@@ -200,6 +200,115 @@ This will start the MCP Inspector at `http://127.0.0.1:6274` where you can test 
 The MCP Inspector requires either:
 - `uv` package manager (recommended) - install with `brew install uv`
 - Or `mcp[cli]` package installed globally
+
+## Remote Connections
+
+AIAML supports both local and remote connections, allowing you to run the server on one machine and connect from remote AI agents or clients.
+
+### Setting Up Remote Access
+
+#### 1. Configure Environment Variables
+
+Create a `.env` file in your project directory or set environment variables:
+
+```bash
+# Required for remote connections
+export AIAML_API_KEY="your-secure-api-key-here"
+export AIAML_HOST="0.0.0.0"  # Listen on all interfaces
+export AIAML_PORT="8000"     # Default port
+
+# Optional settings
+export AIAML_LOG_LEVEL="INFO"
+export AIAML_MEMORY_DIR="memory/files"
+export AIAML_ENABLE_SYNC="true"
+export AIAML_GITHUB_REMOTE="https://github.com/yourusername/your-memory-repo.git"
+```
+
+#### 2. Start Server for Remote Access
+
+```bash
+# Using environment variables
+python3 aiaml_server.py
+
+# Or set variables inline
+AIAML_API_KEY="your-api-key" AIAML_HOST="0.0.0.0" python3 aiaml_server.py
+```
+
+The server will start and display connection information:
+```
+AI Agnostic Memory Layer (AIAML) MCP Server
+Version: 1.0.0
+============================================================
+Remote connections: http://0.0.0.0:8000/sse
+Local connections: also supported via stdio
+Authentication: API key required for remote connections
+Ready to accept MCP connections...
+```
+
+#### 3. Connect from Remote Clients
+
+Remote clients can connect to your AIAML server using the SSE (Server-Sent Events) transport:
+
+**Connection URL**: `http://your-server-ip:8000/sse`
+
+**Authentication**: Include the API key in your client configuration.
+
+### Security Considerations
+
+- **API Key Required**: Remote connections require an API key for authentication
+- **Network Security**: Consider using a VPN or secure network when exposing the server
+- **Firewall**: Ensure port 8000 (or your chosen port) is accessible from client machines
+- **HTTPS**: For production use, consider setting up a reverse proxy with SSL/TLS
+
+### Example Remote Client Configuration
+
+For MCP clients that support remote connections, use configuration similar to:
+
+```json
+{
+  "mcpServers": {
+    "aiaml-remote": {
+      "transport": "sse",
+      "url": "http://your-server-ip:8000/sse",
+      "headers": {
+        "Authorization": "Bearer your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+### Testing Remote Connections
+
+You can test remote connections using curl:
+
+```bash
+# Test server availability
+curl -H "Authorization: Bearer your-api-key" \
+     http://your-server-ip:8000/sse
+
+# Test with MCP Inspector remotely
+AIAML_API_KEY="your-api-key" \
+uv run --with "mcp[cli]" mcp dev --transport sse \
+http://your-server-ip:8000/sse
+```
+
+### Troubleshooting Remote Connections
+
+**Connection Refused**:
+- Check if server is running with correct host/port
+- Verify firewall settings allow connections on the port
+- Ensure `AIAML_HOST` is set to `0.0.0.0` not `127.0.0.1`
+
+**Authentication Errors**:
+- Verify `AIAML_API_KEY` is set on the server
+- Check client is sending correct API key
+- Ensure API key is at least 8 characters long
+
+**Network Issues**:
+- Test basic connectivity with `ping` or `telnet`
+- Check if any proxy or VPN is interfering
+- Verify DNS resolution if using hostnames
 
 ## Project Structure
 
