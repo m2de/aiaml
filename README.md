@@ -234,9 +234,42 @@ The server includes comprehensive error handling:
 - Memory files are stored as plain text markdown for transparency
 - Users have full control over their memory data
 
+## Testing
+
+The project includes a comprehensive test suite to ensure reliability and maintainability:
+
+### Quick Testing (No Dependencies)
+```bash
+# Validate code structure and core functionality
+python3 test_module_structure.py
+python3 test_cross_platform.py
+```
+
+### Full Test Suite (Requires MCP)
+```bash
+# Run all tests
+python3 run_tests.py
+
+# Or run individual tests
+uv run --with "mcp[cli]" python3 test_optimized_search.py
+```
+
+### Testing Documentation
+- **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Comprehensive testing methodology
+- **[TESTING_PATTERNS.md](TESTING_PATTERNS.md)** - Ready-to-use code patterns
+- **[TESTING_SUMMARY.md](TESTING_SUMMARY.md)** - Documentation overview
+
 ## Contributing
 
 This is a simple, focused implementation designed for reliability and ease of use. Contributions should maintain these principles while adding value for AI agent memory management.
+
+### Development Standards
+- **File Size Limit**: Maximum 500 lines per Python file
+- **Testing Required**: All changes must include appropriate tests
+- **Follow Patterns**: Use established testing patterns and code structure
+- **Documentation**: Update relevant documentation for significant changes
+
+See the testing documentation above for detailed guidelines and patterns.
 
 ## License
 

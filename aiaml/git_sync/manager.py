@@ -1,26 +1,18 @@
-"""Enhanced Git synchronization manager for AIAML."""
+"""Git synchronization manager for AIAML."""
 
 import logging
-import os
 import subprocess
-import time
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass
+from typing import Optional, Dict, Any
 
-from .config import Config
-from .errors import ErrorResponse, error_handler, ErrorCategory
-
-
-@dataclass
-class GitSyncResult:
-    """Result of a Git synchronization operation."""
-    success: bool
-    message: str
-    operation: str
-    attempts: int = 1
-    error_code: Optional[str] = None
+from ..config import Config
+from .utils import GitSyncResult
+from .operations import (
+    execute_git_command_with_retry,
+    setup_initial_git_config,
+    validate_git_configuration
+)
 
 
 class GitSyncManager:
@@ -84,7 +76,9 @@ class GitSyncManager:
                     # Don't fail initialization if remote config fails
             
             # Validate Git configuration
-            validation_result = self._validate_git_configuration()
+            validation_result = validate_git_configuration(
+                self.git_repo_dir, self.git_dir, self.config
+            )
             if not validation_result.success:
                 self.logger.warning(f"Git configuration validation failed: {validation_result.message}")
             
@@ -131,7 +125,7 @@ class GitSyncManager:
             self.logger.info("Git repository initialized successfully")
             
             # Set up initial configuration
-            self._setup_initial_git_config()
+            setup_initial_git_config(self.git_repo_dir)
             
             return GitSyncResult(
                 success=True,
@@ -171,60 +165,6 @@ class GitSyncManager:
                 operation="git_init",
                 error_code="GIT_INIT_UNEXPECTED_ERROR"
             )
-    
-    def _setup_initial_git_config(self) -> None:
-        """Set up initial Git configuration for the repository."""
-        try:
-            # Set default branch to main
-            subprocess.run(
-                ["git", "config", "init.defaultBranch", "main"],
-                check=True,
-                capture_output=True,
-                cwd=self.git_repo_dir,
-                timeout=10
-            )
-            
-            # Set user name and email if not already configured
-            try:
-                subprocess.run(
-                    ["git", "config", "user.name"],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=10
-                )
-            except subprocess.CalledProcessError:
-                # User name not configured, set a default
-                subprocess.run(
-                    ["git", "config", "user.name", "AIAML Memory System"],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=10
-                )
-            
-            try:
-                subprocess.run(
-                    ["git", "config", "user.email"],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=10
-                )
-            except subprocess.CalledProcessError:
-                # User email not configured, set a default
-                subprocess.run(
-                    ["git", "config", "user.email", "aiaml@localhost"],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=10
-                )
-            
-            self.logger.debug("Initial Git configuration completed")
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to set up initial Git configuration: {e}")
     
     def _configure_git_remote(self) -> GitSyncResult:
         """
@@ -315,196 +255,6 @@ class GitSyncManager:
                 error_code="GIT_REMOTE_CONFIG_UNEXPECTED_ERROR"
             )
     
-    def _validate_git_configuration(self) -> GitSyncResult:
-        """
-        Validate Git repository configuration.
-        
-        Returns:
-            GitSyncResult indicating validation success or failure
-        """
-        try:
-            validation_errors = []
-            
-            # Check if Git is available
-            try:
-                subprocess.run(
-                    ["git", "--version"],
-                    check=True,
-                    capture_output=True,
-                    timeout=5
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                validation_errors.append("Git command not available")
-            
-            # Check if repository is properly initialized
-            if not self.git_dir.exists():
-                validation_errors.append("Git repository not initialized")
-            
-            # Check Git configuration
-            try:
-                subprocess.run(
-                    ["git", "config", "user.name"],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=5
-                )
-            except subprocess.CalledProcessError:
-                validation_errors.append("Git user.name not configured")
-            
-            try:
-                subprocess.run(
-                    ["git", "config", "user.email"],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=5
-                )
-            except subprocess.CalledProcessError:
-                validation_errors.append("Git user.email not configured")
-            
-            # Check remote configuration if URL is provided
-            if self.config.git_remote_url:
-                try:
-                    result = subprocess.run(
-                        ["git", "remote", "get-url", "origin"],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        cwd=self.git_repo_dir,
-                        timeout=5
-                    )
-                    remote_url = result.stdout.strip()
-                    if remote_url != self.config.git_remote_url:
-                        validation_errors.append(f"Git remote URL mismatch: expected {self.config.git_remote_url}, got {remote_url}")
-                except subprocess.CalledProcessError:
-                    validation_errors.append("Git remote 'origin' not configured")
-            
-            if validation_errors:
-                error_msg = f"Git configuration validation failed: {'; '.join(validation_errors)}"
-                return GitSyncResult(
-                    success=False,
-                    message=error_msg,
-                    operation="validate_config",
-                    error_code="GIT_CONFIG_VALIDATION_FAILED"
-                )
-            
-            return GitSyncResult(
-                success=True,
-                message="Git configuration validation passed",
-                operation="validate_config"
-            )
-            
-        except Exception as e:
-            error_msg = f"Unexpected error during Git configuration validation: {e}"
-            self.logger.error(error_msg, exc_info=True)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="validate_config",
-                error_code="GIT_CONFIG_VALIDATION_UNEXPECTED_ERROR"
-            )
-    
-    def _execute_git_command_with_retry(self, command: List[str], operation: str, timeout: int = 30) -> GitSyncResult:
-        """
-        Execute a Git command with retry logic and exponential backoff.
-        
-        Args:
-            command: Git command to execute
-            operation: Description of the operation for logging
-            timeout: Command timeout in seconds
-            
-        Returns:
-            GitSyncResult indicating success or failure
-        """
-        max_attempts = self.config.git_retry_attempts
-        base_delay = self.config.git_retry_delay
-        
-        for attempt in range(1, max_attempts + 1):
-            try:
-                self.logger.debug(f"Executing Git command (attempt {attempt}/{max_attempts}): {' '.join(command)}")
-                
-                result = subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    cwd=self.git_repo_dir,
-                    timeout=timeout
-                )
-                
-                self.logger.debug(f"Git command succeeded on attempt {attempt}")
-                
-                return GitSyncResult(
-                    success=True,
-                    message=f"{operation} completed successfully",
-                    operation=operation,
-                    attempts=attempt
-                )
-                
-            except subprocess.CalledProcessError as e:
-                error_msg = f"{operation} failed (attempt {attempt}/{max_attempts}): {e.stderr if e.stderr else str(e)}"
-                
-                if attempt == max_attempts:
-                    # Final attempt failed
-                    self.logger.error(error_msg)
-                    return GitSyncResult(
-                        success=False,
-                        message=error_msg,
-                        operation=operation,
-                        attempts=attempt,
-                        error_code="GIT_COMMAND_FAILED"
-                    )
-                else:
-                    # Retry with exponential backoff
-                    delay = base_delay * (2 ** (attempt - 1))
-                    self.logger.warning(f"{error_msg}, retrying in {delay:.1f}s")
-                    time.sleep(delay)
-            
-            except subprocess.TimeoutExpired:
-                error_msg = f"{operation} timed out (attempt {attempt}/{max_attempts})"
-                
-                if attempt == max_attempts:
-                    self.logger.error(error_msg)
-                    return GitSyncResult(
-                        success=False,
-                        message=error_msg,
-                        operation=operation,
-                        attempts=attempt,
-                        error_code="GIT_COMMAND_TIMEOUT"
-                    )
-                else:
-                    delay = base_delay * (2 ** (attempt - 1))
-                    self.logger.warning(f"{error_msg}, retrying in {delay:.1f}s")
-                    time.sleep(delay)
-            
-            except Exception as e:
-                error_msg = f"Unexpected error during {operation} (attempt {attempt}/{max_attempts}): {e}"
-                
-                if attempt == max_attempts:
-                    self.logger.error(error_msg, exc_info=True)
-                    return GitSyncResult(
-                        success=False,
-                        message=error_msg,
-                        operation=operation,
-                        attempts=attempt,
-                        error_code="GIT_COMMAND_UNEXPECTED_ERROR"
-                    )
-                else:
-                    delay = base_delay * (2 ** (attempt - 1))
-                    self.logger.warning(f"{error_msg}, retrying in {delay:.1f}s")
-                    time.sleep(delay)
-        
-        # This should never be reached, but just in case
-        return GitSyncResult(
-            success=False,
-            message=f"{operation} failed after {max_attempts} attempts",
-            operation=operation,
-            attempts=max_attempts,
-            error_code="GIT_COMMAND_MAX_RETRIES_EXCEEDED"
-        )
-    
     def sync_memory_with_retry(self, memory_id: str, filename: str) -> GitSyncResult:
         """
         Synchronize a memory file to Git with retry logic.
@@ -539,9 +289,11 @@ class GitSyncManager:
                 self.logger.info(f"Starting Git sync for memory {memory_id} (file: {filename})")
                 
                 # Step 1: Add the file to Git
-                add_result = self._execute_git_command_with_retry(
+                add_result = execute_git_command_with_retry(
                     ["git", "add", f"files/{filename}"],
-                    f"add memory file {filename}"
+                    f"add memory file {filename}",
+                    self.git_repo_dir,
+                    self.config
                 )
                 
                 if not add_result.success:
@@ -549,9 +301,11 @@ class GitSyncManager:
                 
                 # Step 2: Commit the changes
                 commit_message = f"Add memory {memory_id}"
-                commit_result = self._execute_git_command_with_retry(
+                commit_result = execute_git_command_with_retry(
                     ["git", "commit", "-m", commit_message],
-                    f"commit memory {memory_id}"
+                    f"commit memory {memory_id}",
+                    self.git_repo_dir,
+                    self.config
                 )
                 
                 if not commit_result.success:
@@ -559,9 +313,11 @@ class GitSyncManager:
                 
                 # Step 3: Push to remote if configured
                 if self.config.git_remote_url:
-                    push_result = self._execute_git_command_with_retry(
+                    push_result = execute_git_command_with_retry(
                         ["git", "push", "origin", "main"],
                         f"push memory {memory_id} to remote",
+                        self.git_repo_dir,
+                        self.config,
                         timeout=60  # Longer timeout for network operations
                     )
                     
@@ -701,23 +457,3 @@ def get_git_sync_manager(config: Config) -> GitSyncManager:
         _git_sync_manager = GitSyncManager(config)
     
     return _git_sync_manager
-
-
-def sync_memory_to_git(memory_id: str, filename: str, config: Config) -> None:
-    """
-    Convenience function to sync a memory to Git using the global manager.
-    
-    This function is compatible with the existing sync_to_github function
-    but uses the enhanced GitSyncManager.
-    
-    Args:
-        memory_id: Unique identifier for the memory
-        filename: Name of the memory file
-        config: Server configuration
-    """
-    try:
-        git_manager = get_git_sync_manager(config)
-        git_manager.sync_memory_background(memory_id, filename)
-    except Exception as e:
-        logger = logging.getLogger('aiaml.git_sync')
-        logger.error(f"Failed to start Git sync for memory {memory_id}: {e}", exc_info=True)
