@@ -48,7 +48,9 @@ class GitSyncManager:
         
         # Initialize if Git sync is enabled
         if config.enable_git_sync:
-            self._initialize_repository()
+            init_result = self._initialize_repository()
+            if not init_result.success:
+                self.logger.warning(f"Git repository initialization failed: {init_result.message}")
     
     def _initialize_repository(self) -> GitSyncResult:
         """

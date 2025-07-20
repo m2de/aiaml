@@ -1,62 +1,186 @@
-"""Cross-platform file locking utilities."""
+"""
+Cross-platform file locking utilities for AIAML.
+
+This module provides file locking functionality to prevent concurrent
+write conflicts and ensure data integrity during file operations.
+"""
 
 import os
 import time
 import logging
+import threading
 from pathlib import Path
-from typing import Optional, Union
-from datetime import datetime
+from typing import Optional, Dict, Any
+from contextlib import contextmanager
 
 from .platform import get_platform_info
+from .config import Config
 
 
 class FileLock:
-    """Cross-platform file locking implementation."""
+    """
+    Cross-platform file locking implementation.
     
-    def __init__(self, lock_file_path: Union[str, Path], timeout: int = 10):
+    Provides exclusive file locking to prevent concurrent modifications
+    of memory files and other critical resources.
+    """
+    
+    def __init__(self, lock_file_path: Path, timeout: float = 30.0):
         """
         Initialize file lock.
         
         Args:
             lock_file_path: Path to the lock file
-            timeout: Maximum time to wait for lock in seconds
+            timeout: Maximum time to wait for lock acquisition (seconds)
         """
-        self.lock_file_path = Path(lock_file_path)
+        self.lock_file_path = lock_file_path
         self.timeout = timeout
-        self.lock_fd: Optional[int] = None
-        self.platform_info = get_platform_info()
         self.logger = logging.getLogger('aiaml.file_lock')
-    
-    def __enter__(self):
-        """Context manager entry."""
-        if self.acquire():
-            return self
-        else:
-            raise TimeoutError(f"Failed to acquire lock on {self.lock_file_path} within {self.timeout} seconds")
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.release()
+        self.platform_info = get_platform_info()
+        self._lock_acquired = False
+        self._lock_thread = threading.current_thread()
     
     def acquire(self) -> bool:
         """
         Acquire the file lock.
         
         Returns:
-            True if lock acquired successfully, False otherwise
+            True if lock was acquired, False if timeout occurred
+        """
+        start_time = time.time()
+        
+        while time.time() - start_time < self.timeout:
+            try:
+                # Ensure lock directory exists
+                self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                if self.platform_info.is_windows:
+                    # Windows-specific locking
+                    success = self._acquire_windows_lock()
+                else:
+                    # Unix-like systems
+                    success = self._acquire_unix_lock()
+                
+                if success:
+                    self._lock_acquired = True
+                    self.logger.debug(f"Acquired lock: {self.lock_file_path}")
+                    return True
+                
+                # Wait before retrying
+                time.sleep(0.1)
+                
+            except Exception as e:
+                self.logger.warning(f"Error acquiring lock {self.lock_file_path}: {e}")
+                time.sleep(0.1)
+        
+        self.logger.warning(f"Failed to acquire lock {self.lock_file_path} within {self.timeout}s")
+        return False
+    
+    def _acquire_windows_lock(self) -> bool:
+        """Acquire lock on Windows systems."""
+        try:
+            # On Windows, we use exclusive file creation
+            # If the file already exists, this will fail
+            with open(self.lock_file_path, 'x') as f:
+                f.write(f"locked_by_pid_{os.getpid()}_thread_{threading.get_ident()}")
+            return True
+        except FileExistsError:
+            # Lock file already exists, check if it's stale
+            return self._check_and_cleanup_stale_lock()
+        except Exception:
+            return False
+    
+    def _acquire_unix_lock(self) -> bool:
+        """Acquire lock on Unix-like systems."""
+        try:
+            # Use O_CREAT | O_EXCL for atomic lock creation
+            fd = os.open(
+                self.lock_file_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644
+            )
+            
+            with os.fdopen(fd, 'w') as f:
+                f.write(f"locked_by_pid_{os.getpid()}_thread_{threading.get_ident()}")
+            
+            return True
+            
+        except FileExistsError:
+            # Lock file already exists, check if it's stale
+            return self._check_and_cleanup_stale_lock()
+        except Exception:
+            return False
+    
+    def _check_and_cleanup_stale_lock(self) -> bool:
+        """
+        Check if an existing lock is stale and clean it up if necessary.
+        
+        Returns:
+            True if lock was cleaned up and can be acquired, False otherwise
         """
         try:
-            # Create lock file if it doesn't exist
             if not self.lock_file_path.exists():
-                self.lock_file_path.touch()
+                return True
             
-            if self.platform_info.is_windows:
-                return self._acquire_windows()
-            else:
-                return self._acquire_unix()
-                
+            # Check lock file age
+            lock_age = time.time() - self.lock_file_path.stat().st_mtime
+            
+            # If lock is older than 5 minutes, consider it stale
+            if lock_age > 300:
+                self.logger.warning(f"Cleaning up stale lock file: {self.lock_file_path}")
+                self.lock_file_path.unlink()
+                return True
+            
+            # Try to read lock content to check if process is still running
+            try:
+                lock_content = self.lock_file_path.read_text()
+                if "locked_by_pid_" in lock_content:
+                    pid_str = lock_content.split("locked_by_pid_")[1].split("_")[0]
+                    pid = int(pid_str)
+                    
+                    # Check if process is still running
+                    if not self._is_process_running(pid):
+                        self.logger.warning(f"Cleaning up lock from dead process {pid}: {self.lock_file_path}")
+                        self.lock_file_path.unlink()
+                        return True
+            except (ValueError, IndexError, OSError):
+                # If we can't parse the lock file, consider it stale
+                self.logger.warning(f"Cleaning up unparseable lock file: {self.lock_file_path}")
+                self.lock_file_path.unlink()
+                return True
+            
+            return False
+            
         except Exception as e:
-            self.logger.error(f"Failed to acquire file lock: {e}")
+            self.logger.warning(f"Error checking stale lock {self.lock_file_path}: {e}")
+            return False
+    
+    def _is_process_running(self, pid: int) -> bool:
+        """
+        Check if a process with given PID is still running.
+        
+        Args:
+            pid: Process ID to check
+            
+        Returns:
+            True if process is running, False otherwise
+        """
+        try:
+            if self.platform_info.is_windows:
+                # On Windows, use tasklist command
+                import subprocess
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                return str(pid) in result.stdout
+            else:
+                # On Unix-like systems, send signal 0 to check if process exists
+                os.kill(pid, 0)
+                return True
+        except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
             return False
     
     def release(self) -> bool:
@@ -64,263 +188,199 @@ class FileLock:
         Release the file lock.
         
         Returns:
-            True if lock released successfully, False otherwise
+            True if lock was released, False otherwise
         """
         try:
-            if self.lock_fd is not None:
-                if self.platform_info.is_windows:
-                    return self._release_windows()
-                else:
-                    return self._release_unix()
+            if not self._lock_acquired:
+                return True
+            
+            if self.lock_file_path.exists():
+                self.lock_file_path.unlink()
+                self.logger.debug(f"Released lock: {self.lock_file_path}")
+            
+            self._lock_acquired = False
             return True
             
         except Exception as e:
-            self.logger.error(f"Failed to release file lock: {e}")
-            return False
-        finally:
-            self.lock_fd = None
-    
-    def _acquire_windows(self) -> bool:
-        """Acquire lock on Windows using msvcrt."""
-        try:
-            import msvcrt
-            
-            # Open the lock file
-            self.lock_fd = os.open(str(self.lock_file_path), os.O_RDWR | os.O_CREAT)
-            
-            # Try to acquire the lock with timeout
-            start_time = datetime.now()
-            while (datetime.now() - start_time).total_seconds() < self.timeout:
-                try:
-                    # Try to lock the file (non-blocking)
-                    msvcrt.locking(self.lock_fd, msvcrt.LK_NBLCK, 1)
-                    return True  # Lock acquired
-                except OSError:
-                    # Lock is held by another process, wait and retry
-                    time.sleep(0.1)
-            
-            # Timeout reached
-            os.close(self.lock_fd)
-            self.lock_fd = None
-            return False
-            
-        except ImportError:
-            # msvcrt not available, fall back to simple file-based locking
-            return self._acquire_simple()
-        except Exception as e:
-            self.logger.error(f"Windows file locking failed: {e}")
-            if self.lock_fd is not None:
-                try:
-                    os.close(self.lock_fd)
-                except:
-                    pass
-                self.lock_fd = None
+            self.logger.error(f"Error releasing lock {self.lock_file_path}: {e}")
             return False
     
-    def _acquire_unix(self) -> bool:
-        """Acquire lock on Unix systems using fcntl."""
-        try:
-            import fcntl
-            import errno
-            
-            # Open the lock file
-            self.lock_fd = os.open(str(self.lock_file_path), os.O_RDWR)
-            
-            # Try to acquire the lock with timeout
-            start_time = datetime.now()
-            while (datetime.now() - start_time).total_seconds() < self.timeout:
-                try:
-                    # Try non-blocking lock
-                    fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return True  # Lock acquired
-                except (IOError, OSError) as e:
-                    # Check if it's a "would block" error
-                    if e.errno != errno.EWOULDBLOCK:
-                        os.close(self.lock_fd)
-                        self.lock_fd = None
-                        raise
-                    # Wait a bit before retrying
-                    time.sleep(0.1)
-            
-            # Timeout reached
-            os.close(self.lock_fd)
-            self.lock_fd = None
-            return False
-            
-        except ImportError:
-            # fcntl not available, fall back to simple file-based locking
-            return self._acquire_simple()
-        except Exception as e:
-            self.logger.error(f"Unix file locking failed: {e}")
-            if self.lock_fd is not None:
-                try:
-                    os.close(self.lock_fd)
-                except:
-                    pass
-                self.lock_fd = None
-            return False
-    
-    def _acquire_simple(self) -> bool:
-        """Simple file-based locking fallback."""
-        try:
-            lock_info_file = self.lock_file_path.with_suffix('.lock_info')
-            
-            start_time = datetime.now()
-            while (datetime.now() - start_time).total_seconds() < self.timeout:
-                try:
-                    # Try to create lock info file exclusively
-                    with open(lock_info_file, 'x') as f:
-                        f.write(f"pid:{os.getpid()}\ntime:{datetime.now().isoformat()}\n")
-                    
-                    # Lock acquired
-                    self.lock_fd = -1  # Use -1 to indicate simple locking
-                    return True
-                    
-                except FileExistsError:
-                    # Check if the lock is stale
-                    if self._is_stale_lock(lock_info_file):
-                        try:
-                            lock_info_file.unlink()
-                            continue  # Try again
-                        except:
-                            pass
-                    
-                    # Wait and retry
-                    time.sleep(0.1)
-            
-            return False
-            
-        except Exception as e:
-            self.logger.error(f"Simple file locking failed: {e}")
-            return False
-    
-    def _release_windows(self) -> bool:
-        """Release lock on Windows."""
-        try:
-            if self.lock_fd == -1:
-                return self._release_simple()
-            
-            import msvcrt
-            
-            # Unlock the file
-            msvcrt.locking(self.lock_fd, msvcrt.LK_UNLCK, 1)
-            os.close(self.lock_fd)
-            return True
-            
-        except ImportError:
-            return self._release_simple()
-        except Exception as e:
-            self.logger.error(f"Windows lock release failed: {e}")
-            try:
-                os.close(self.lock_fd)
-            except:
-                pass
-            return False
-    
-    def _release_unix(self) -> bool:
-        """Release lock on Unix systems."""
-        try:
-            if self.lock_fd == -1:
-                return self._release_simple()
-            
-            import fcntl
-            
-            fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
-            os.close(self.lock_fd)
-            return True
-            
-        except ImportError:
-            return self._release_simple()
-        except Exception as e:
-            self.logger.error(f"Unix lock release failed: {e}")
-            try:
-                os.close(self.lock_fd)
-            except:
-                pass
-            return False
-    
-    def _release_simple(self) -> bool:
-        """Release simple file-based lock."""
-        try:
-            lock_info_file = self.lock_file_path.with_suffix('.lock_info')
-            if lock_info_file.exists():
-                lock_info_file.unlink()
-            return True
-        except Exception as e:
-            self.logger.error(f"Simple lock release failed: {e}")
-            return False
-    
-    def _is_stale_lock(self, lock_info_file: Path, max_age_seconds: int = 300) -> bool:
+    def is_locked(self) -> bool:
         """
-        Check if a lock file is stale (older than max_age_seconds).
+        Check if the lock is currently held by this instance.
+        
+        Returns:
+            True if lock is held, False otherwise
+        """
+        return self._lock_acquired
+    
+    def __enter__(self):
+        """Context manager entry."""
+        if not self.acquire():
+            raise TimeoutError(f"Could not acquire lock {self.lock_file_path} within {self.timeout}s")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.release()
+
+
+class MemoryFileLock:
+    """
+    Specialized file lock for memory files.
+    
+    Provides memory-specific locking functionality with automatic
+    lock file naming and cleanup.
+    """
+    
+    def __init__(self, config: Config, memory_file_path: Path, timeout: float = 30.0):
+        """
+        Initialize memory file lock.
         
         Args:
-            lock_info_file: Path to the lock info file
-            max_age_seconds: Maximum age in seconds before considering stale
-            
-        Returns:
-            True if the lock is stale, False otherwise
+            config: Server configuration
+            memory_file_path: Path to the memory file to lock
+            timeout: Maximum time to wait for lock acquisition
         """
-        try:
-            if not lock_info_file.exists():
-                return True
-            
-            # Check file age
-            file_age = time.time() - lock_info_file.stat().st_mtime
-            if file_age > max_age_seconds:
-                return True
-            
-            # Try to read PID and check if process is still running
+        self.config = config
+        self.memory_file_path = memory_file_path
+        self.timeout = timeout
+        
+        # Create lock file path in locks directory
+        lock_dir = config.memory_dir.parent / "locks"
+        lock_filename = f"{memory_file_path.name}.lock"
+        self.lock_file_path = lock_dir / lock_filename
+        
+        self.file_lock = FileLock(self.lock_file_path, timeout)
+    
+    def acquire(self) -> bool:
+        """Acquire the memory file lock."""
+        return self.file_lock.acquire()
+    
+    def release(self) -> bool:
+        """Release the memory file lock."""
+        return self.file_lock.release()
+    
+    def is_locked(self) -> bool:
+        """Check if the memory file lock is held."""
+        return self.file_lock.is_locked()
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self.file_lock.__enter__()
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        return self.file_lock.__exit__(exc_type, exc_val, exc_tb)
+
+
+@contextmanager
+def memory_file_lock(config: Config, memory_file_path: Path, timeout: float = 30.0):
+    """
+    Context manager for memory file locking.
+    
+    Args:
+        config: Server configuration
+        memory_file_path: Path to the memory file to lock
+        timeout: Maximum time to wait for lock acquisition
+        
+    Yields:
+        MemoryFileLock instance
+        
+    Raises:
+        TimeoutError: If lock cannot be acquired within timeout
+    """
+    lock = MemoryFileLock(config, memory_file_path, timeout)
+    
+    try:
+        if not lock.acquire():
+            raise TimeoutError(f"Could not acquire lock for {memory_file_path} within {timeout}s")
+        yield lock
+    finally:
+        lock.release()
+
+
+def cleanup_stale_locks(config: Config, max_age_minutes: int = 10) -> int:
+    """
+    Clean up stale lock files.
+    
+    Args:
+        config: Server configuration
+        max_age_minutes: Maximum age of lock files to keep (minutes)
+        
+    Returns:
+        Number of stale locks cleaned up
+    """
+    try:
+        lock_dir = config.memory_dir.parent / "locks"
+        
+        if not lock_dir.exists():
+            return 0
+        
+        cleaned_count = 0
+        current_time = time.time()
+        max_age_seconds = max_age_minutes * 60
+        
+        for lock_file in lock_dir.glob("*.lock"):
             try:
-                content = lock_info_file.read_text()
-                for line in content.split('\n'):
-                    if line.startswith('pid:'):
-                        pid = int(line.split(':', 1)[1])
+                # Check file age
+                file_age = current_time - lock_file.stat().st_mtime
+                
+                if file_age > max_age_seconds:
+                    # Check if the lock is from a dead process
+                    try:
+                        lock_content = lock_file.read_text()
+                        if "locked_by_pid_" in lock_content:
+                            pid_str = lock_content.split("locked_by_pid_")[1].split("_")[0]
+                            pid = int(pid_str)
+                            
+                            platform_info = get_platform_info()
+                            
+                            # Check if process is still running
+                            process_running = False
+                            try:
+                                if platform_info.is_windows:
+                                    import subprocess
+                                    result = subprocess.run(
+                                        ["tasklist", "/FI", f"PID eq {pid}"],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=5
+                                    )
+                                    process_running = str(pid) in result.stdout
+                                else:
+                                    os.kill(pid, 0)
+                                    process_running = True
+                            except:
+                                process_running = False
+                            
+                            if not process_running:
+                                lock_file.unlink()
+                                cleaned_count += 1
+                                logging.getLogger('aiaml.file_lock').info(
+                                    f"Cleaned up stale lock from dead process {pid}: {lock_file}"
+                                )
+                        else:
+                            # Unparseable lock file, remove it
+                            lock_file.unlink()
+                            cleaned_count += 1
+                    except:
+                        # If we can't read or parse the lock file, remove it
+                        lock_file.unlink()
+                        cleaned_count += 1
                         
-                        # Check if process is still running
-                        try:
-                            os.kill(pid, 0)  # Signal 0 just checks if process exists
-                            return False  # Process is still running
-                        except (OSError, ProcessLookupError):
-                            return True  # Process is dead, lock is stale
-            except:
-                pass
-            
-            return False
-            
-        except Exception:
-            # If we can't determine, assume it's not stale to be safe
-            return False
-
-
-def acquire_file_lock(lock_file_path: Union[str, Path], timeout: int = 10) -> Optional[FileLock]:
-    """
-    Acquire a file lock in a cross-platform way.
-    
-    Args:
-        lock_file_path: Path to the lock file
-        timeout: Maximum time to wait for lock in seconds
+            except Exception as e:
+                logging.getLogger('aiaml.file_lock').warning(
+                    f"Error processing lock file {lock_file}: {e}"
+                )
         
-    Returns:
-        FileLock instance if successful, None if failed
-    """
-    file_lock = FileLock(lock_file_path, timeout)
-    if file_lock.acquire():
-        return file_lock
-    else:
-        return None
-
-
-def release_file_lock(file_lock: FileLock) -> bool:
-    """
-    Release a file lock.
-    
-    Args:
-        file_lock: FileLock instance to release
+        if cleaned_count > 0:
+            logging.getLogger('aiaml.file_lock').info(
+                f"Cleaned up {cleaned_count} stale lock files"
+            )
         
-    Returns:
-        True if released successfully, False otherwise
-    """
-    if file_lock:
-        return file_lock.release()
-    return True
+        return cleaned_count
+        
+    except Exception as e:
+        logging.getLogger('aiaml.file_lock').error(f"Error during lock cleanup: {e}")
+        return 0

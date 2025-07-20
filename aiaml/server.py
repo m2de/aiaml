@@ -192,15 +192,20 @@ def initialize_server() -> FastMCP:
             }
         )
         
-        # Create memory directory if it doesn't exist
+        # Initialize automated directory and file management
         try:
-            server_config.memory_dir.mkdir(parents=True, exist_ok=True)
+            from .file_manager import initialize_aiaml_directories
+            
+            if not initialize_aiaml_directories(server_config):
+                init_logger.error("Failed to initialize AIAML directory structure")
+                raise RuntimeError("Directory initialization failed")
+            
             init_logger.info(
-                f"Memory directory ready: {server_config.memory_dir}",
+                "AIAML directory structure initialized successfully",
                 extra={'operation': 'directory_setup'}
             )
         except Exception as e:
-            init_logger.error(f"Failed to create memory directory: {e}")
+            init_logger.error(f"Failed to initialize directory structure: {e}")
             raise
         
         # Initialize Git synchronization manager if Git sync is enabled
@@ -321,24 +326,66 @@ def start_connection_monitoring():
     logging.getLogger('aiaml.init').info("Connection monitoring started")
 
 
+def start_file_maintenance():
+    """Start background thread for file maintenance tasks."""
+    def file_maintenance():
+        maintenance_logger = logging.getLogger('aiaml.file_maintenance')
+        
+        while True:
+            try:
+                # Run maintenance tasks every 30 minutes
+                time.sleep(1800)  # 30 minutes
+                
+                # Load current configuration
+                from .config import load_configuration
+                from .file_manager import get_file_manager
+                from .file_lock import cleanup_stale_locks
+                
+                config = load_configuration()
+                file_manager = get_file_manager(config)
+                
+                # Clean up old backups (keep 30 days, max 100 per file)
+                backup_count = file_manager.cleanup_old_backups(max_age_days=30, max_count=100)
+                if backup_count > 0:
+                    maintenance_logger.info(f"Cleaned up {backup_count} old backup files")
+                
+                # Clean up stale locks (older than 10 minutes)
+                lock_count = cleanup_stale_locks(config, max_age_minutes=10)
+                if lock_count > 0:
+                    maintenance_logger.info(f"Cleaned up {lock_count} stale lock files")
+                
+            except Exception as e:
+                maintenance_logger.error(f"File maintenance error: {e}")
+                time.sleep(300)  # Wait 5 minutes before retrying
+    
+    # Start maintenance thread as daemon so it doesn't prevent shutdown
+    maintenance_thread = threading.Thread(target=file_maintenance, daemon=True)
+    maintenance_thread.start()
+    
+    logging.getLogger('aiaml.init').info("File maintenance started")
+
+
 def run_server_with_transport(server: FastMCP, config: Config, startup_logger: logging.Logger):
     """Run the server with appropriate transport based on configuration and connection monitoring."""
     # Start connection monitoring
     start_connection_monitoring()
+    
+    # Start file maintenance
+    start_file_maintenance()
     
     # Determine transport mode based on host configuration
     if config.host == "127.0.0.1" or config.host == "localhost":
         # Local-only configuration - use stdio for compatibility
         startup_logger.info("Starting server in local mode (stdio transport)")
         startup_logger.info("Server will accept local MCP connections via stdio")
-        startup_logger.info("Connection monitoring: Active (background thread)")
+        startup_logger.info("Background services: Connection monitoring and file maintenance active")
         server.run(transport="stdio")
     else:
         # Remote configuration - use SSE transport for HTTP-based connections
         startup_logger.info(f"Starting server in remote mode (SSE transport) on {config.host}:{config.port}")
         startup_logger.info("Server will accept both local and remote MCP connections")
         startup_logger.info(f"Remote clients can connect to: http://{config.host}:{config.port}/sse")
-        startup_logger.info("Connection monitoring: Active (background thread)")
+        startup_logger.info("Background services: Connection monitoring and file maintenance active")
         server.run(transport="sse")
 
 
