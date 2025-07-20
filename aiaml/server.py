@@ -16,6 +16,8 @@ from .memory import (
     validate_memory_input, validate_search_input, validate_recall_input,
     get_search_performance_stats
 )
+from .performance import get_performance_stats
+from .benchmarks import run_performance_benchmark
 from .errors import error_handler
 
 
@@ -141,13 +143,45 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         """
         return get_search_performance_stats()
     
+    @server.tool()
+    @auth_middleware
+    def system_performance() -> dict:
+        """
+        Get comprehensive system performance monitoring data.
+        
+        Returns:
+            Dictionary containing detailed performance metrics including:
+            - Operation timing statistics (memory store, search, recall)
+            - System resource usage (memory, CPU, disk I/O)
+            - Performance threshold compliance
+            - Optimization recommendations
+        """
+        return get_performance_stats(server_config)
+    
+    @server.tool()
+    @auth_middleware
+    def run_benchmark() -> dict:
+        """
+        Run comprehensive performance benchmark suite.
+        
+        This tool runs performance benchmarks to validate compliance with
+        requirements 6.1, 6.2, and 6.3:
+        - Memory storage operations < 1 second
+        - Memory search operations < 2 seconds for 10,000+ memories
+        - No significant performance degradation with multiple clients
+        
+        Returns:
+            Dictionary containing benchmark results and performance assessment
+        """
+        return run_performance_benchmark(server_config)
+    
     # Log successful tool registration
     auth_logger = logging.getLogger('aiaml.auth')
     auth_logger.info(
         "MCP tools registered with authentication middleware",
         extra={
             'operation': 'register_tools',
-            'tools': ['remember', 'think', 'recall', 'performance_stats'],
+            'tools': ['remember', 'think', 'recall', 'performance_stats', 'system_performance', 'run_benchmark'],
             'auth_enabled': server_config.api_key is not None
         }
     )
