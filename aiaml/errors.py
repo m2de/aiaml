@@ -9,13 +9,11 @@ from typing import Dict, Any, Optional
 
 class ErrorCategory(Enum):
     """Categories of errors for structured error handling."""
-    AUTHENTICATION = "authentication"
     MEMORY_OPERATION = "memory_operation"
     GIT_SYNC = "git_sync"
     CONFIGURATION = "configuration"
     FILE_IO = "file_io"
     VALIDATION = "validation"
-    NETWORK = "network"
     SYSTEM = "system"
 
 
@@ -49,45 +47,7 @@ class ErrorHandler:
     def __init__(self):
         self.logger = logging.getLogger('aiaml.error_handler')
     
-    def handle_authentication_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
-        """Handle authentication errors with appropriate responses."""
-        context = context or {}
-        
-        # Determine specific error code based on error type and context
-        if "invalid" in str(error).lower() or "unauthorized" in str(error).lower():
-            error_code = "AUTH_INVALID_KEY"
-            message = "The provided API key is invalid"
-        elif "missing" in str(error).lower() or "required" in str(error).lower():
-            error_code = "AUTH_MISSING_KEY"
-            message = "API key is required for remote connections"
-        elif "expired" in str(error).lower():
-            error_code = "AUTH_EXPIRED_KEY"
-            message = "The provided API key has expired"
-        else:
-            error_code = "AUTH_GENERAL_ERROR"
-            message = f"Authentication failed: {str(error)}"
-        
-        error_response = ErrorResponse(
-            error="Authentication failed",
-            error_code=error_code,
-            message=message,
-            timestamp=datetime.now().isoformat(),
-            category=ErrorCategory.AUTHENTICATION.value,
-            context=context
-        )
-        
-        # Log the authentication error
-        self.logger.error(
-            f"Authentication error: {message}",
-            extra={
-                'operation': 'auth_error',
-                'error_code': error_code,
-                'connection_type': context.get('connection_type'),
-                'remote_address': context.get('remote_address')
-            }
-        )
-        
-        return error_response
+    # Authentication error handling removed for local-only server
     
     def handle_memory_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
         """Handle memory operation errors gracefully."""

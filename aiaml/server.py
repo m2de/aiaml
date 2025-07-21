@@ -10,7 +10,6 @@ from typing import List
 from mcp.server.fastmcp import FastMCP
 
 from .config import Config, load_configuration, validate_configuration
-from .auth import create_authentication_middleware, connection_manager
 from .memory import (
     store_memory_atomic, search_memories_optimized, recall_memories,
     validate_memory_input, validate_search_input, validate_recall_input,
@@ -63,13 +62,9 @@ def setup_logging(config: Config) -> None:
 
 
 def register_tools(server: FastMCP, server_config: Config) -> None:
-    """Register MCP tools with the server instance and authentication middleware."""
-    
-    # Create authentication middleware
-    auth_middleware = create_authentication_middleware(server_config)
+    """Register MCP tools with the server instance."""
     
     @server.tool()
-    @auth_middleware
     def remember(agent: str, user: str, topics: List[str], content: str) -> dict:
         """
         Store a new memory entry.
@@ -92,7 +87,6 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         return store_memory_atomic(agent, user, topics, content, server_config)
     
     @server.tool()
-    @auth_middleware
     def think(keywords: List[str]) -> List[dict]:
         """
         Search for relevant memories by keywords.
@@ -112,7 +106,6 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         return search_memories_optimized(keywords, server_config)
     
     @server.tool()
-    @auth_middleware
     def recall(memory_ids: List[str]) -> List[dict]:
         """
         Retrieve full memory details by memory IDs.
@@ -132,7 +125,6 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         return recall_memories(memory_ids, server_config)
     
     @server.tool()
-    @auth_middleware
     def performance_stats() -> dict:
         """
         Get search performance statistics and monitoring data.
@@ -144,7 +136,6 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         return get_search_performance_stats()
     
     @server.tool()
-    @auth_middleware
     def system_performance() -> dict:
         """
         Get comprehensive system performance monitoring data.
@@ -159,7 +150,6 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         return get_performance_stats(server_config)
     
     @server.tool()
-    @auth_middleware
     def run_benchmark() -> dict:
         """
         Run comprehensive performance benchmark suite.
@@ -176,19 +166,18 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         return run_performance_benchmark(server_config)
     
     # Log successful tool registration
-    auth_logger = logging.getLogger('aiaml.auth')
-    auth_logger.info(
-        "MCP tools registered with authentication middleware",
+    init_logger = logging.getLogger('aiaml.init')
+    init_logger.info(
+        "MCP tools registered successfully",
         extra={
             'operation': 'register_tools',
-            'tools': ['remember', 'think', 'recall', 'performance_stats', 'system_performance', 'run_benchmark'],
-            'auth_enabled': server_config.api_key is not None
+            'tools': ['remember', 'think', 'recall', 'performance_stats', 'system_performance', 'run_benchmark']
         }
     )
 
 
 def initialize_server() -> FastMCP:
-    """Initialize MCP server with enhanced configuration and validation for both local and remote connections."""
+    """Initialize MCP server with local-only configuration."""
     try:
         # Load and validate configuration
         server_config = load_configuration()
@@ -219,10 +208,7 @@ def initialize_server() -> FastMCP:
                 'operation': 'config_load',
                 'memory_dir': str(server_config.memory_dir),
                 'git_sync_enabled': server_config.enable_git_sync,
-                'log_level': server_config.log_level,
-                'api_key_configured': server_config.api_key is not None,
-                'host': server_config.host,
-                'port': server_config.port
+                'log_level': server_config.log_level
             }
         )
         
@@ -265,48 +251,26 @@ def initialize_server() -> FastMCP:
             except Exception as e:
                 init_logger.warning(f"Git synchronization manager initialization failed: {e}")
         
-        # Initialize the MCP server with remote connection support
-        init_logger.info("Initializing MCP server with remote connection support")
+        # Initialize the MCP server with local-only support
+        init_logger.info("Initializing MCP server with local-only support")
         server = FastMCP(
             "AI Agnostic Memory Layer",
-            host=server_config.host,
-            port=server_config.port,
             log_level=server_config.log_level.upper()
         )
         
-        # Register MCP tools with authentication middleware
-        init_logger.info("Registering MCP tools with authentication middleware")
+        # Register MCP tools
+        init_logger.info("Registering MCP tools")
         register_tools(server, server_config)
         
         # Log connection configuration
         init_logger.info(
-            f"Server configured for connections on {server_config.host}:{server_config.port}",
+            "Server configured for local connections only",
             extra={
                 'operation': 'connection_config',
-                'host': server_config.host,
-                'port': server_config.port,
                 'supports_local': True,
-                'supports_remote': True
+                'supports_remote': False
             }
         )
-        
-        # Log authentication configuration
-        if server_config.api_key:
-            init_logger.info(
-                "API key authentication enabled for remote connections",
-                extra={
-                    'operation': 'auth_config',
-                    'auth_enabled': True
-                }
-            )
-        else:
-            init_logger.warning(
-                "API key authentication is not configured - remote connections will not require authentication",
-                extra={
-                    'operation': 'auth_config',
-                    'auth_enabled': False
-                }
-            )
         
         init_logger.info(
             "AIAML MCP server initialized successfully",
@@ -315,13 +279,9 @@ def initialize_server() -> FastMCP:
                 'version': '1.0.0',
                 'features': {
                     'git_sync': server_config.enable_git_sync,
-                    'authentication': server_config.api_key is not None,
                     'memory_dir': str(server_config.memory_dir),
                     'local_connections': True,
-                    'remote_connections': True,
-                    'multi_client': True,
-                    'host': server_config.host,
-                    'port': server_config.port
+                    'remote_connections': False
                 }
             }
         )
@@ -338,26 +298,7 @@ def initialize_server() -> FastMCP:
         raise
 
 
-def start_connection_monitoring():
-    """Start background thread for connection monitoring and logging."""
-    def monitor_connections():
-        monitor_logger = logging.getLogger('aiaml.connection_monitor')
-        
-        while True:
-            try:
-                # Log connection summary every 5 minutes
-                time.sleep(300)  # 5 minutes
-                connection_manager.log_connection_summary()
-                
-            except Exception as e:
-                monitor_logger.error(f"Connection monitoring error: {e}")
-                time.sleep(60)  # Wait 1 minute before retrying
-    
-    # Start monitoring thread as daemon so it doesn't prevent shutdown
-    monitor_thread = threading.Thread(target=monitor_connections, daemon=True)
-    monitor_thread.start()
-    
-    logging.getLogger('aiaml.init').info("Connection monitoring started")
+# Connection monitoring removed for local-only server
 
 
 def start_file_maintenance():
@@ -400,31 +341,19 @@ def start_file_maintenance():
 
 
 def run_server_with_transport(server: FastMCP, config: Config, startup_logger: logging.Logger):
-    """Run the server with appropriate transport based on configuration and connection monitoring."""
-    # Start connection monitoring
-    start_connection_monitoring()
-    
+    """Run the server with stdio transport for local-only operation."""
     # Start file maintenance
     start_file_maintenance()
     
-    # Determine transport mode based on host configuration
-    if config.host == "127.0.0.1" or config.host == "localhost":
-        # Local-only configuration - use stdio for compatibility
-        startup_logger.info("Starting server in local mode (stdio transport)")
-        startup_logger.info("Server will accept local MCP connections via stdio")
-        startup_logger.info("Background services: Connection monitoring and file maintenance active")
-        server.run(transport="stdio")
-    else:
-        # Remote configuration - use SSE transport for HTTP-based connections
-        startup_logger.info(f"Starting server in remote mode (SSE transport) on {config.host}:{config.port}")
-        startup_logger.info("Server will accept both local and remote MCP connections")
-        startup_logger.info(f"Remote clients can connect to: http://{config.host}:{config.port}/sse")
-        startup_logger.info("Background services: Connection monitoring and file maintenance active")
-        server.run(transport="sse")
+    # Local-only configuration - use stdio transport
+    startup_logger.info("Starting server in local-only mode (stdio transport)")
+    startup_logger.info("Server will accept local MCP connections via stdio")
+    startup_logger.info("Background services: File maintenance active")
+    server.run(transport="stdio")
 
 
 def main():
-    """Main entry point for the AIAML server package with comprehensive startup validation and multi-client support."""
+    """Main entry point for the AIAML server package with local-only support."""
     startup_logger = None
     
     try:
@@ -438,7 +367,7 @@ def main():
         
         startup_logger.info("=" * 60)
         startup_logger.info("AI Agnostic Memory Layer (AIAML) MCP Server")
-        startup_logger.info("Version: 1.0.0")
+        startup_logger.info("Version: 1.0.0 (Local-Only)")
         startup_logger.info("=" * 60)
         
         # Perform startup validation
@@ -461,33 +390,24 @@ def main():
             startup_logger.error("Please install with: pip install 'mcp[cli]>=1.0.0'")
             exit(1)
         
-        # Initialize server with enhanced configuration
-        startup_logger.info("Initializing server with remote connection support...")
+        # Initialize server with local-only configuration
+        startup_logger.info("Initializing server with local-only support...")
         server = initialize_server()
         
-        # Load configuration for transport selection
+        # Load configuration
         config = load_configuration()
         
         startup_logger.info("=" * 60)
         startup_logger.info("Server startup completed successfully!")
-        startup_logger.info("Multi-client connection support enabled")
+        startup_logger.info("Local-only connection support enabled")
         
         # Log connection information
-        if config.host == "127.0.0.1" or config.host == "localhost":
-            startup_logger.info("Local connections: stdio transport")
-        else:
-            startup_logger.info(f"Remote connections: http://{config.host}:{config.port}/sse")
-            startup_logger.info("Local connections: also supported via stdio")
+        startup_logger.info("Local connections: stdio transport")
         
-        if config.api_key:
-            startup_logger.info("Authentication: API key required for remote connections")
-        else:
-            startup_logger.warning("Authentication: No API key configured (not recommended for remote access)")
-        
-        startup_logger.info("Ready to accept MCP connections...")
+        startup_logger.info("Ready to accept local MCP connections...")
         startup_logger.info("=" * 60)
         
-        # Start the server with appropriate transport
+        # Start the server with stdio transport
         run_server_with_transport(server, config, startup_logger)
         
     except KeyboardInterrupt:
