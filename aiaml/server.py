@@ -40,7 +40,6 @@ def setup_logging(config: Config) -> None:
     # Set up specific loggers
     loggers = [
         'aiaml.init',
-        'aiaml.auth',
         'aiaml.memory',
         'aiaml.git_sync',
         'aiaml.error_handler',
@@ -167,13 +166,7 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
     
     # Log successful tool registration
     init_logger = logging.getLogger('aiaml.init')
-    init_logger.info(
-        "MCP tools registered successfully",
-        extra={
-            'operation': 'register_tools',
-            'tools': ['remember', 'think', 'recall', 'performance_stats', 'system_performance', 'run_benchmark']
-        }
-    )
+    init_logger.info("MCP tools registered successfully")
 
 
 def initialize_server() -> FastMCP:
@@ -202,15 +195,7 @@ def initialize_server() -> FastMCP:
                 exit(1)
         
         # Log successful configuration loading
-        init_logger.info(
-            "Configuration loaded successfully",
-            extra={
-                'operation': 'config_load',
-                'memory_dir': str(server_config.memory_dir),
-                'git_sync_enabled': server_config.enable_git_sync,
-                'log_level': server_config.log_level
-            }
-        )
+        init_logger.info("Configuration loaded successfully")
         
         # Initialize automated directory and file management
         try:
@@ -220,10 +205,7 @@ def initialize_server() -> FastMCP:
                 init_logger.error("Failed to initialize AIAML directory structure")
                 raise RuntimeError("Directory initialization failed")
             
-            init_logger.info(
-                "AIAML directory structure initialized successfully",
-                extra={'operation': 'directory_setup'}
-            )
+            init_logger.info("AIAML directory structure initialized successfully")
         except Exception as e:
             init_logger.error(f"Failed to initialize directory structure: {e}")
             raise
@@ -262,26 +244,10 @@ def initialize_server() -> FastMCP:
         init_logger.info("Registering MCP tools")
         register_tools(server, server_config)
         
-        # Log connection configuration
-        init_logger.info(
-            "Server configured for stdio transport only",
-            extra={
-                'operation': 'connection_config',
-                'transport': 'stdio'
-            }
-        )
+        # Log server configuration
+        init_logger.info("Server configured for stdio transport only")
         
-        init_logger.info(
-            "AIAML MCP server initialized successfully",
-            extra={
-                'operation': 'server_init',
-                'version': '1.0.0',
-                'features': {
-                    'git_sync': server_config.enable_git_sync,
-                    'memory_dir': str(server_config.memory_dir)
-                }
-            }
-        )
+        init_logger.info("AIAML MCP server initialized successfully")
         
         return server
         

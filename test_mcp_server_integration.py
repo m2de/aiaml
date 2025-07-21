@@ -91,7 +91,6 @@ def test_tool_registration():
             register_tools(server, config)
             
             print("  ✓ Tools registered successfully")
-            print("  ✓ Authentication middleware applied")
             return True
             
     except Exception as e:
@@ -155,68 +154,7 @@ def test_tool_functionality():
         return False
 
 
-def test_connection_handling():
-    """Test connection handling with authentication."""
-    print("\nTesting Connection Handling")
-    print("-" * 30)
-    
-    try:
-        from aiaml.auth import (
-            ConnectionInfo, authenticate_connection, connection_manager
-        )
-        from aiaml.config import Config
-        
-        config = Config(api_key="test-connection-key-12345")
-        
-        # Test local connection
-        local_conn = ConnectionInfo(
-            is_local=True,
-            remote_address="127.0.0.1:8000",
-            connection_id="test_local"
-        )
-        
-        success, error = authenticate_connection(local_conn, config)
-        if success:
-            print("  ✓ Local connection handling working")
-        else:
-            print(f"  ✗ Local connection handling failed: {error}")
-            return False
-        
-        # Test remote connection with valid key
-        remote_conn = ConnectionInfo(
-            is_local=False,
-            remote_address="192.168.1.100:8000",
-            api_key="test-connection-key-12345",
-            connection_id="test_remote"
-        )
-        
-        success, error = authenticate_connection(remote_conn, config)
-        if success:
-            print("  ✓ Remote connection handling working")
-        else:
-            print(f"  ✗ Remote connection handling failed: {error}")
-            return False
-        
-        # Test connection manager
-        connection_manager.add_connection(local_conn)
-        connection_manager.add_connection(remote_conn)
-        
-        stats = connection_manager.get_connection_stats()
-        if stats['active_connections'] >= 2:
-            print("  ✓ Connection manager working")
-        else:
-            print(f"  ✗ Connection manager failed: {stats}")
-            return False
-        
-        # Clean up connections
-        connection_manager.remove_connection(local_conn.connection_id)
-        connection_manager.remove_connection(remote_conn.connection_id)
-        
-        return True
-        
-    except Exception as e:
-        print(f"  ✗ Connection handling test failed: {e}")
-        return False
+
 
 
 def run_mcp_integration_tests():
@@ -228,8 +166,7 @@ def run_mcp_integration_tests():
     tests = [
         ("MCP Server Startup", test_mcp_server_startup),
         ("Tool Registration", test_tool_registration),
-        ("Tool Functionality", test_tool_functionality),
-        ("Connection Handling", test_connection_handling)
+        ("Tool Functionality", test_tool_functionality)
     ]
     
     results = []

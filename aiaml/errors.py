@@ -47,8 +47,6 @@ class ErrorHandler:
     def __init__(self):
         self.logger = logging.getLogger('aiaml.error_handler')
     
-    # Authentication error handling removed for local-only server
-    
     def handle_memory_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
         """Handle memory operation errors gracefully."""
         context = context or {}
