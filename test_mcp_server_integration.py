@@ -3,15 +3,13 @@
 MCP Server Integration Test
 
 This test validates that the MCP server can start and handle tool calls correctly
-with all the enhanced components integrated.
+with all the enhanced components integrated for local-only operation.
 """
 
 import os
 import sys
 import tempfile
-import threading
 import time
-import json
 from pathlib import Path
 
 # Add the project root to Python path
@@ -27,8 +25,7 @@ def test_mcp_server_startup():
         original_env = {}
         test_env_vars = {
             'AIAML_LOG_LEVEL': 'ERROR',  # Reduce log noise
-            'AIAML_ENABLE_SYNC': 'false',  # Disable Git sync for testing
-            'AIAML_API_KEY': 'test-integration-key-12345'
+            'AIAML_ENABLE_SYNC': 'false'  # Disable Git sync for testing
         }
         
         # Set test environment variables
@@ -77,8 +74,7 @@ def test_tool_registration():
         with tempfile.TemporaryDirectory() as temp_dir:
             config = Config(
                 memory_dir=Path(temp_dir) / "memory" / "files",
-                enable_git_sync=False,
-                api_key="test-tool-registration-key"
+                enable_git_sync=False
             )
             
             # Ensure memory directory exists
@@ -152,9 +148,6 @@ def test_tool_functionality():
     except Exception as e:
         print(f"  ✗ Tool functionality test failed: {e}")
         return False
-
-
-
 
 
 def run_mcp_integration_tests():

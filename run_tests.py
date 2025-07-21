@@ -38,7 +38,8 @@ def main():
         ("test_optimized_search.py", "Basic Optimized Search Functionality"),
         ("test_search_performance_detailed.py", "Detailed Performance Benchmarking"),
         ("test_mcp_integration.py", "MCP Server Integration"),
-        ("test_task_requirements.py", "Task Requirements Verification"),
+        ("test_mcp_server_integration.py", "MCP Server Integration"),
+        ("test_task_requirements.py", "Local-Only Server Requirements Verification"),
     ]
     
     results = []

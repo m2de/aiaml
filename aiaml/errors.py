@@ -1,4 +1,4 @@
-"""Error handling framework for AIAML."""
+"""Error handling framework for AIAML local-only MCP server."""
 
 import logging
 from dataclasses import dataclass
@@ -19,7 +19,7 @@ class ErrorCategory(Enum):
 
 @dataclass
 class ErrorResponse:
-    """Standardized error response format."""
+    """Standardized error response format for memory operations."""
     error: str
     error_code: str
     message: str
@@ -42,7 +42,7 @@ class ErrorResponse:
 
 
 class ErrorHandler:
-    """Enhanced error handling framework with categorized error handling."""
+    """Error handling framework focused on memory operations."""
     
     def __init__(self):
         self.logger = logging.getLogger('aiaml.error_handler')
@@ -137,8 +137,86 @@ class ErrorHandler:
         
         return error_response
     
+    def handle_git_sync_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle Git synchronization errors."""
+        context = context or {}
+        
+        # Determine specific error code based on error type
+        if "not a git repository" in str(error).lower():
+            error_code = "GIT_NOT_REPOSITORY"
+            message = "Git repository not initialized"
+        elif "remote" in str(error).lower():
+            error_code = "GIT_REMOTE_ERROR"
+            message = f"Git remote operation failed: {str(error)}"
+        elif "permission" in str(error).lower():
+            error_code = "GIT_PERMISSION_ERROR"
+            message = "Permission denied for Git operation"
+        else:
+            error_code = "GIT_GENERAL_ERROR"
+            message = f"Git operation failed: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="Git sync operation failed",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.GIT_SYNC.value,
+            context=context
+        )
+        
+        # Log the Git sync error
+        self.logger.warning(
+            f"Git sync error: {message}",
+            extra={
+                'operation': 'git_sync_error',
+                'error_code': error_code,
+                'repository_path': context.get('repository_path')
+            }
+        )
+        
+        return error_response
+    
+    def handle_file_io_error(self, error: Exception, context: Dict[str, Any] = None) -> ErrorResponse:
+        """Handle file I/O errors."""
+        context = context or {}
+        
+        # Determine specific error code based on error type
+        if isinstance(error, FileNotFoundError):
+            error_code = "FILE_NOT_FOUND"
+            message = f"File not found: {context.get('file_path', 'unknown')}"
+        elif isinstance(error, PermissionError):
+            error_code = "FILE_PERMISSION_DENIED"
+            message = "Permission denied accessing file"
+        elif isinstance(error, OSError):
+            error_code = "FILE_IO_ERROR"
+            message = f"File system error: {str(error)}"
+        else:
+            error_code = "FILE_GENERAL_ERROR"
+            message = f"File operation failed: {str(error)}"
+        
+        error_response = ErrorResponse(
+            error="File operation failed",
+            error_code=error_code,
+            message=message,
+            timestamp=datetime.now().isoformat(),
+            category=ErrorCategory.FILE_IO.value,
+            context=context
+        )
+        
+        # Log the file I/O error
+        self.logger.error(
+            f"File I/O error: {message}",
+            extra={
+                'operation': 'file_io_error',
+                'error_code': error_code,
+                'file_path': context.get('file_path')
+            }
+        )
+        
+        return error_response
+    
     def create_success_response(self, operation: str, data: Dict[str, Any], context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Create a standardized success response."""
+        """Create a standardized success response for memory operations."""
         response = {
             "success": True,
             "operation": operation,
