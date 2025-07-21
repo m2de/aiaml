@@ -128,11 +128,10 @@ def get_platform_specific_defaults() -> Dict[str, Any]:
     defaults = {
         'memory_dir': Path("memory/files"),
         'log_level': "INFO",
-        'host': "127.0.0.1",
-        'port': 8000,
         'git_retry_attempts': 3,
         'git_retry_delay': 1.0,
         'max_search_results': 25
+        # Network-related defaults (host, port) removed for local-only server
     }
     
     # Platform-specific adjustments

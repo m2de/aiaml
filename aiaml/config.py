@@ -20,9 +20,6 @@ except ImportError:
 class Config:
     """Configuration class for AIAML server with validation and defaults."""
     
-    # Authentication
-    api_key: Optional[str] = None
-    
     # Git synchronization
     enable_git_sync: bool = True
     git_remote_url: Optional[str] = None
@@ -38,9 +35,7 @@ class Config:
     # Performance
     max_search_results: int = 25
     
-    # Network configuration for remote connections
-    host: str = "127.0.0.1"
-    port: int = 8000
+    # Note: Network-related fields (host, port, api_key) have been removed for local-only server
     
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -64,14 +59,6 @@ class Config:
         # Validate max search results
         if self.max_search_results <= 0:
             raise ValueError("max_search_results must be positive")
-        
-        # Validate network configuration
-        if not isinstance(self.port, int) or self.port < 1 or self.port > 65535:
-            raise ValueError(f"Invalid port number: {self.port}. Must be between 1 and 65535")
-        
-        # Validate host format (basic validation)
-        if not self.host or not isinstance(self.host, str):
-            raise ValueError("Host must be a non-empty string")
 
 
 def load_configuration() -> Config:
@@ -81,15 +68,20 @@ def load_configuration() -> Config:
         platform_defaults = get_platform_specific_defaults()
         platform_info = get_platform_info()
         
+        # Network environment variables are ignored for local-only server
+        # AIAML_API_KEY, AIAML_HOST, AIAML_PORT are explicitly ignored
+        if os.getenv("AIAML_API_KEY") or os.getenv("AIAML_HOST") or os.getenv("AIAML_PORT"):
+            logging.getLogger('aiaml.config').info(
+                "Network-related environment variables (AIAML_API_KEY, AIAML_HOST, AIAML_PORT) "
+                "are ignored in local-only server mode"
+            )
+        
         return Config(
-            api_key=os.getenv("AIAML_API_KEY"),
             enable_git_sync=os.getenv("AIAML_ENABLE_SYNC", "true").lower() == "true",
             git_remote_url=os.getenv("AIAML_GITHUB_REMOTE"),
             memory_dir=Path(os.getenv("AIAML_MEMORY_DIR", str(platform_defaults['memory_dir']))),
             log_level=os.getenv("AIAML_LOG_LEVEL", platform_defaults['log_level']).upper(),
             max_search_results=int(os.getenv("AIAML_MAX_SEARCH_RESULTS", str(platform_defaults['max_search_results']))),
-            host=os.getenv("AIAML_HOST", platform_defaults['host']),
-            port=int(os.getenv("AIAML_PORT", str(platform_defaults['port']))),
             git_retry_attempts=int(os.getenv("AIAML_GIT_RETRY_ATTEMPTS", str(platform_defaults['git_retry_attempts']))),
             git_retry_delay=float(os.getenv("AIAML_GIT_RETRY_DELAY", str(platform_defaults['git_retry_delay'])))
         )
@@ -103,14 +95,12 @@ def validate_configuration(config: Config) -> List[str]:
     
     errors = []
     
-    # Use comprehensive configuration validation
+    # Use comprehensive configuration validation (network validation removed for local-only server)
     config_dict = {
-        'api_key': config.api_key,
         'memory_dir': str(config.memory_dir),
         'git_remote_url': config.git_remote_url,
-        'log_level': config.log_level,
-        'host': config.host,
-        'port': config.port
+        'log_level': config.log_level
+        # Network-related fields (host, port, api_key) removed for local-only server
     }
     
     # Get validation errors from the comprehensive validator
@@ -134,16 +124,6 @@ def validate_configuration(config: Config) -> List[str]:
     if config.enable_git_sync:
         if config.git_remote_url and not config.git_remote_url.startswith(("http://", "https://", "git@")):
             errors.append(f"WARNING: Git remote URL may be invalid: {config.git_remote_url}")
-    
-    # Validate authentication setup
-    if not config.api_key:
-        errors.append("WARNING: No API key configured - remote connections will not require authentication")
-    elif len(config.api_key.strip()) < 8:
-        errors.append("WARNING: API key is shorter than recommended minimum of 8 characters")
-    
-    # Validate network configuration for security
-    if config.host != "127.0.0.1" and config.host != "localhost" and not config.api_key:
-        errors.append("ERROR: Remote connections require API key authentication for security")
     
     # Validate file limits and performance settings
     if config.max_search_results > 100:
