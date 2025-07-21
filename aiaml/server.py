@@ -177,7 +177,7 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
 
 
 def initialize_server() -> FastMCP:
-    """Initialize MCP server with local-only configuration."""
+    """Initialize MCP server with stdio transport for local-only operation."""
     try:
         # Load and validate configuration
         server_config = load_configuration()
@@ -251,8 +251,8 @@ def initialize_server() -> FastMCP:
             except Exception as e:
                 init_logger.warning(f"Git synchronization manager initialization failed: {e}")
         
-        # Initialize the MCP server with local-only support
-        init_logger.info("Initializing MCP server with local-only support")
+        # Initialize the MCP server with stdio transport only
+        init_logger.info("Initializing MCP server with stdio transport")
         server = FastMCP(
             "AI Agnostic Memory Layer",
             log_level=server_config.log_level.upper()
@@ -264,11 +264,10 @@ def initialize_server() -> FastMCP:
         
         # Log connection configuration
         init_logger.info(
-            "Server configured for local connections only",
+            "Server configured for stdio transport only",
             extra={
                 'operation': 'connection_config',
-                'supports_local': True,
-                'supports_remote': False
+                'transport': 'stdio'
             }
         )
         
@@ -279,9 +278,7 @@ def initialize_server() -> FastMCP:
                 'version': '1.0.0',
                 'features': {
                     'git_sync': server_config.enable_git_sync,
-                    'memory_dir': str(server_config.memory_dir),
-                    'local_connections': True,
-                    'remote_connections': False
+                    'memory_dir': str(server_config.memory_dir)
                 }
             }
         )
@@ -340,20 +337,8 @@ def start_file_maintenance():
     logging.getLogger('aiaml.init').info("File maintenance started")
 
 
-def run_server_with_transport(server: FastMCP, config: Config, startup_logger: logging.Logger):
-    """Run the server with stdio transport for local-only operation."""
-    # Start file maintenance
-    start_file_maintenance()
-    
-    # Local-only configuration - use stdio transport
-    startup_logger.info("Starting server in local-only mode (stdio transport)")
-    startup_logger.info("Server will accept local MCP connections via stdio")
-    startup_logger.info("Background services: File maintenance active")
-    server.run(transport="stdio")
-
-
 def main():
-    """Main entry point for the AIAML server package with local-only support."""
+    """Main entry point for the AIAML server package with stdio transport."""
     startup_logger = None
     
     try:
@@ -390,25 +375,21 @@ def main():
             startup_logger.error("Please install with: pip install 'mcp[cli]>=1.0.0'")
             exit(1)
         
-        # Initialize server with local-only configuration
-        startup_logger.info("Initializing server with local-only support...")
+        # Initialize server with stdio transport
+        startup_logger.info("Initializing server with stdio transport...")
         server = initialize_server()
-        
-        # Load configuration
-        config = load_configuration()
         
         startup_logger.info("=" * 60)
         startup_logger.info("Server startup completed successfully!")
-        startup_logger.info("Local-only connection support enabled")
-        
-        # Log connection information
-        startup_logger.info("Local connections: stdio transport")
-        
-        startup_logger.info("Ready to accept local MCP connections...")
+        startup_logger.info("Ready to accept MCP connections via stdio transport")
         startup_logger.info("=" * 60)
         
-        # Start the server with stdio transport
-        run_server_with_transport(server, config, startup_logger)
+        # Start file maintenance
+        start_file_maintenance()
+        
+        # Start the server with stdio transport directly
+        startup_logger.info("Starting server with stdio transport")
+        server.run(transport="stdio")
         
     except KeyboardInterrupt:
         if startup_logger:
