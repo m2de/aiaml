@@ -1,10 +1,7 @@
-# Memory files - these are backed up to a separate repository
-memory/
-
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 *.so
 .Python
 build/
@@ -19,25 +16,22 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
 # Virtual environments
 venv/
-.venv/
-env/
-.env/
-ENV/
-env.bak/
-venv.bak/
-test_memory_dir/
-
-# Environment configuration
 .env
+
+# Package managers
+uv.lock
+
+# Memory data (for development)
+memory/files/*.md
+memory/backups/
+memory/locks/
+memory/temp/
 
 # IDE
 .vscode/
@@ -48,12 +42,4 @@ test_memory_dir/
 
 # OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
-
-# UV
-uv.lock
