@@ -60,7 +60,7 @@ def test_remember_functionality():
             memory_id = result["memory_id"]
             
             # Verify file was created
-            memory_files = list(config.memory_dir.glob("*.md"))
+            memory_files = list(config.files_dir.glob("*.md"))
             if memory_files:
                 print(f"  ✓ Memory file created: {memory_files[0].name}")
             else:
@@ -174,7 +174,7 @@ def test_git_synchronization():
         )
         
         # Create memory directory
-        config.memory_dir.mkdir(parents=True, exist_ok=True)
+        config.files_dir.mkdir(parents=True, exist_ok=True)
         
         # Initialize Git sync manager
         try:
@@ -202,7 +202,7 @@ def test_git_synchronization():
                 time.sleep(2)
                 
                 # Check if file exists in Git repository
-                memory_file = config.memory_dir / filename
+                memory_file = config.files_dir / filename
                 if memory_file.exists():
                     print(f"  ✓ Memory file exists: {filename}")
                     return True
@@ -243,7 +243,7 @@ def test_file_operations():
             print(f"  ✓ Created test memory with ID: {memory_id}")
             
             # Verify file exists
-            memory_file = config.memory_dir / filename
+            memory_file = config.files_dir / filename
             if memory_file.exists():
                 print(f"  ✓ Memory file exists: {filename}")
                 
