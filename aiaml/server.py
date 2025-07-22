@@ -65,14 +65,23 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         """
         Store a new memory entry.
         
+        Use this tool when the user explicitly asks you to remember something, or when 
+        important information emerges that would be valuable to recall in future conversations.
+        This creates persistent memory that survives across conversation boundaries.
+        
         Args:
-            agent: Name of the AI agent storing the memory
-            user: User identifier associated with the memory
-            topics: List of topic tags for categorization
-            content: The actual memory content to store
+            agent: Name of the AI agent storing the memory (use your model name, e.g., "claude-sonnet-4")
+            user: User identifier - use the actual user's name or a consistent identifier
+            topics: List of topic tags for categorisation (2-5 relevant keywords that describe the content)
+            content: The actual memory content to store (be comprehensive but concise - include context and key details)
             
         Returns:
             Dictionary containing memory_id and confirmation message
+            
+        Examples:
+            - User says "remember that I'm vegetarian": topics=["dietary_preferences", "vegetarian"], content="User follows a vegetarian diet"
+            - User shares project details: topics=["work", "project_alpha"], content="Working on Project Alpha - deadline March 15th, team of 5 developers"
+            - User mentions preferences: topics=["preferences", "communication"], content="Prefers direct communication style, dislikes lengthy explanations"
         """
         # Validate input parameters
         validation_error = validate_memory_input(agent, user, topics, content)
@@ -87,11 +96,26 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         """
         Search for relevant memories by keywords.
         
+        Use this tool when you need to recall information that might have been discussed before.
+        This searches through stored memories to find relevant context for the current conversation.
+        Always use this before answering questions that might benefit from previous context.
+        
         Args:
-            keywords: List of keywords to search for in memory content and topics
+            keywords: List of keywords to search for in memory content and topics (2-6 words work best)
+                     - Use synonyms and related terms to cast a wide net
+                     - Include both specific terms and general categories
+                     - Examples: ["vegetarian", "diet"], ["project", "deadline"], ["preferences", "communication"]
             
         Returns:
-            List of matching memories with relevance scores
+            List of matching memories with relevance scores (higher scores = better matches)
+            Use the relevance scores to prioritise which memories to recall for full details
+            If you get enough information from this think tool, you may not need to use recall
+            
+        Usage pattern:
+            1. Use 'think' to search for potentially relevant memories
+            2. Examine the results and their relevance scores  
+            3. Use 'recall' to get full details of the most relevant memories if needed
+            4. Apply that context to your response
         """
         # Validate input parameters
         validation_error = validate_search_input(keywords)
@@ -106,11 +130,27 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         """
         Retrieve full memory details by memory IDs.
         
+        Use this tool after 'think' to get complete details of specific memories.
+        This provides the full context needed to inform your responses with previous knowledge.
+        
         Args:
-            memory_ids: List of memory IDs to retrieve
+            memory_ids: List of memory IDs to retrieve (get these from 'think' results)
+                       - Prioritise memories with higher relevance scores from 'think'
+                       - Usually recall 2-5 most relevant memories to avoid information overload
             
         Returns:
-            List of complete memory objects
+            List of complete memory objects containing:
+            - Full memory content
+            - Topics and metadata
+            - Creation timestamps
+            - Associated user and agent information
+            
+        Typical workflow:
+            1. User asks a question
+            2. Use 'think' with relevant keywords
+            3. Use 'recall' on the most promising memory_ids
+            4. Incorporate recalled information naturally into your response
+            5. Don't explicitly mention you've recalled memories unless relevant
         """
         # Validate input parameters
         validation_error = validate_recall_input(memory_ids)
@@ -124,7 +164,6 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
     # Log successful tool registration
     init_logger = logging.getLogger('aiaml.init')
     init_logger.info("MCP tools registered successfully")
-
 
 def initialize_server() -> FastMCP:
     """Initialize MCP server with stdio transport for local-only operation."""
