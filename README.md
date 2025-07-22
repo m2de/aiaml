@@ -1,14 +1,16 @@
 # AI Agnostic Memory Layer (AIAML)
 
-A simple local memory system for AI agents that provides persistent storage and retrieval of memories using markdown files. This MCP (Model Context Protocol) server allows any AI agent to store, search, and retrieve memories across conversations.
+A simple local-only memory system for AI agents that provides persistent storage and retrieval of memories using markdown files. This MCP (Model Context Protocol) server allows any AI agent to store, search, and retrieve memories across conversations using stdio transport for secure local connections.
 
 ## Features
 
+- **Local-Only Operation**: Secure stdio transport with no network exposure
 - **Simple Memory Storage**: Store memories as markdown files with metadata
 - **Keyword Search**: Find relevant memories by searching topics and content
 - **Memory Retrieval**: Retrieve complete memory details by ID
 - **Agent Agnostic**: Works with any AI agent (Claude, GPT, Gemini, etc.)
 - **Local Storage**: All memories stored locally for privacy and control
+- **Simplified Configuration**: No network settings required
 
 ## Installation
 
@@ -193,7 +195,7 @@ uv run --with "mcp[cli]" mcp dev aiaml_server.py
 mcp dev aiaml_server.py
 ```
 
-This will start the MCP Inspector at `http://127.0.0.1:6274` where you can test the tools interactively.
+This will start the MCP Inspector at `http://127.0.0.1:6274` where you can test the tools interactively using stdio transport.
 
 ### Connection Requirements
 
@@ -201,125 +203,48 @@ The MCP Inspector requires either:
 - `uv` package manager (recommended) - install with `brew install uv`
 - Or `mcp[cli]` package installed globally
 
-## Remote Connections
+**Note**: The server only supports stdio transport for local connections. Remote connections are not supported.
 
-AIAML supports both local and remote connections, allowing you to run the server on one machine and connect from remote AI agents or clients.
+## Configuration
 
-### Setting Up Remote Access
+AIAML uses environment variables for configuration. All network-related settings have been removed for security and simplicity.
 
-#### 1. Configure Environment Variables
-
-Create a `.env` file in your project directory or set environment variables:
+### Available Environment Variables
 
 ```bash
-# Required for remote connections
-export AIAML_API_KEY="your-secure-api-key-here"
-export AIAML_HOST="0.0.0.0"  # Listen on all interfaces
-export AIAML_PORT="8000"     # Default port
-
 # Optional settings
-export AIAML_LOG_LEVEL="INFO"
-export AIAML_MEMORY_DIR="memory/files"
-export AIAML_ENABLE_SYNC="true"
-export AIAML_GITHUB_REMOTE="https://github.com/yourusername/your-memory-repo.git"
+export AIAML_LOG_LEVEL="INFO"                    # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+export AIAML_MEMORY_DIR="memory/files"           # Memory storage directory
+export AIAML_ENABLE_SYNC="true"                  # Enable Git synchronization
+export AIAML_GITHUB_REMOTE="https://github.com/yourusername/your-memory-repo.git"  # Git remote URL
+export AIAML_MAX_SEARCH_RESULTS="25"             # Maximum search results returned
 ```
 
-#### 2. Start Server for Remote Access
+### Removed Network Settings
 
-```bash
-# Using environment variables
-python3 aiaml_server.py
+The following environment variables are **no longer supported** and will be ignored:
+- `AIAML_API_KEY` - Authentication removed for local-only operation
+- `AIAML_HOST` - Network hosting removed
+- `AIAML_PORT` - Network port configuration removed
 
-# Or set variables inline
-AIAML_API_KEY="your-api-key" AIAML_HOST="0.0.0.0" python3 aiaml_server.py
-```
-
-The server will start and display connection information:
-```
-AI Agnostic Memory Layer (AIAML) MCP Server
-Version: 1.0.0
-============================================================
-Remote connections: http://0.0.0.0:8000/sse
-Local connections: also supported via stdio
-Authentication: API key required for remote connections
-Ready to accept MCP connections...
-```
-
-#### 3. Connect from Remote Clients
-
-Remote clients can connect to your AIAML server using the SSE (Server-Sent Events) transport:
-
-**Connection URL**: `http://your-server-ip:8000/sse`
-
-**Authentication**: Include the API key in your client configuration.
-
-### Security Considerations
-
-- **API Key Required**: Remote connections require an API key for authentication
-- **Network Security**: Consider using a VPN or secure network when exposing the server
-- **Firewall**: Ensure port 8000 (or your chosen port) is accessible from client machines
-- **HTTPS**: For production use, consider setting up a reverse proxy with SSL/TLS
-
-### Example Remote Client Configuration
-
-For MCP clients that support remote connections, use configuration similar to:
-
-```json
-{
-  "mcpServers": {
-    "aiaml-remote": {
-      "transport": "sse",
-      "url": "http://your-server-ip:8000/sse",
-      "headers": {
-        "Authorization": "Bearer your-api-key-here"
-      }
-    }
-  }
-}
-```
-
-### Testing Remote Connections
-
-You can test remote connections using curl:
-
-```bash
-# Test server availability
-curl -H "Authorization: Bearer your-api-key" \
-     http://your-server-ip:8000/sse
-
-# Test with MCP Inspector remotely
-AIAML_API_KEY="your-api-key" \
-uv run --with "mcp[cli]" mcp dev --transport sse \
-http://your-server-ip:8000/sse
-```
-
-### Troubleshooting Remote Connections
-
-**Connection Refused**:
-- Check if server is running with correct host/port
-- Verify firewall settings allow connections on the port
-- Ensure `AIAML_HOST` is set to `0.0.0.0` not `127.0.0.1`
-
-**Authentication Errors**:
-- Verify `AIAML_API_KEY` is set on the server
-- Check client is sending correct API key
-- Ensure API key is at least 8 characters long
-
-**Network Issues**:
-- Test basic connectivity with `ping` or `telnet`
-- Check if any proxy or VPN is interfering
-- Verify DNS resolution if using hostnames
+If these variables are set, the server will log a message that they are being ignored and continue with local-only operation.
 
 ## Project Structure
 
 ```
 aiaml/
-├── aiaml_server.py           # Main MCP server implementation
+├── aiaml_server.py           # Main entry point (compatibility wrapper)
+├── aiaml/                    # Main package directory
+│   ├── server.py            # MCP server implementation (stdio only)
+│   ├── config.py            # Configuration management (network settings removed)
+│   ├── memory/              # Memory operations modules
+│   └── ...                  # Other core modules
 ├── requirements.txt          # Python dependencies
+├── run_server.sh            # Execution script using uv
 ├── README.md                # This documentation
 ├── pyproject.toml           # Package configuration
 └── memory/                  # Memory storage directory
-    └── *.md                 # Individual memory files
+    └── files/               # Individual memory markdown files
 ```
 
 ## Requirements
@@ -338,10 +263,43 @@ The server includes comprehensive error handling:
 
 ## Security and Privacy
 
-- All memories are stored locally on your machine
-- No external network connections are made
-- Memory files are stored as plain text markdown for transparency
-- Users have full control over their memory data
+- **Local-Only Operation**: Server only accepts stdio connections, no network exposure
+- **No Authentication Required**: Simplified security model for local use
+- **All memories stored locally**: Complete data control on your machine
+- **No external network connections**: Except optional Git synchronization
+- **Transparent storage**: Memory files stored as plain text markdown
+- **Full user control**: Direct access to all memory data
+
+## Troubleshooting
+
+### Common Issues
+
+**Server won't start**:
+- Ensure Python 3.10+ is installed
+- Install MCP dependencies: `pip install 'mcp[cli]>=1.0.0'`
+- Check memory directory permissions
+
+**MCP client can't connect**:
+- Verify the server is running with stdio transport
+- Check that your MCP client configuration uses the correct path
+- Ensure no network transport settings are configured
+
+**Memory operations fail**:
+- Check memory directory exists and is writable
+- Verify sufficient disk space
+- Review logs for specific error messages
+
+**Git sync issues**:
+- Ensure Git is installed and accessible
+- Verify Git remote URL is correct
+- Check network connectivity for Git operations
+
+### Migration from Network Version
+
+If you previously used a network-enabled version of AIAML:
+- Remove any `AIAML_API_KEY`, `AIAML_HOST`, or `AIAML_PORT` environment variables
+- Update MCP client configurations to remove network transport settings
+- Existing memory files remain fully compatible
 
 ## Testing
 

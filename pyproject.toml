@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-aiaml = "aiaml_server:main"
+aiaml = "aiaml:main"
 
-[tool.setuptools]
-py-modules = ["aiaml_server"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aiaml*"]
