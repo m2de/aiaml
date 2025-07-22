@@ -96,6 +96,7 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         """
         Search for relevant memories by keywords.
         
+        Automatically search when users ask about their personal details, relationships, preferences, work, or any 'my/mine' references.
         Use this tool when you need to recall information that might have been discussed before.
         This searches through stored memories to find relevant context for the current conversation.
         Always use this before answering questions that might benefit from previous context.
@@ -109,7 +110,7 @@ def register_tools(server: FastMCP, server_config: Config) -> None:
         Returns:
             List of matching memories with relevance scores (higher scores = better matches)
             Use the relevance scores to prioritise which memories to recall for full details
-            If you get enough information from this think tool, you may not need to use recall
+            No need to use recall if content_preview_is_truncated is false
             
         Usage pattern:
             1. Use 'think' to search for potentially relevant memories
