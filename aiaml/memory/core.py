@@ -170,7 +170,7 @@ def store_memory_atomic(agent: str, user: str, topics: List[str], content: str, 
         # Generate unique memory ID and filename
         memory_id = generate_memory_id()
         filename = create_memory_filename(memory_id)
-        file_path = config.memory_dir / filename
+        file_path = config.files_dir / filename
         
         # Record file operation for performance tracking
         # File operation logged (performance monitoring removed)
@@ -207,7 +207,7 @@ topics: {json.dumps(topics)}
             # Create a secure temporary file in the same directory using cross-platform method
             try:
                 # Use cross-platform secure temporary file creation
-                fd, temp_file = create_secure_temp_file(config.memory_dir, suffix='.tmp')
+                fd, temp_file = create_secure_temp_file(config.files_dir, suffix='.tmp')
                 
                 # Write content to temporary file
                 with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -300,7 +300,7 @@ def recall_memories(memory_ids: List[str], config: Config) -> List[Dict[str, Any
     
     try:
         results = []
-        memory_files = list(config.memory_dir.glob("*.md"))
+        memory_files = list(config.files_dir.glob("*.md"))
         
         # Performance monitoring removed for simplicity
         

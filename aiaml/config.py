@@ -27,7 +27,7 @@ class Config:
     git_retry_delay: float = 1.0
     
     # Storage
-    memory_dir: Path = field(default_factory=lambda: Path("memory/files"))
+    memory_dir: Path = field(default_factory=lambda: Path.home() / ".aiaml")  # Base directory for all AIAML data
     
     # Logging
     log_level: str = "INFO"
@@ -59,6 +59,31 @@ class Config:
         # Validate max search results
         if self.max_search_results <= 0:
             raise ValueError("max_search_results must be positive")
+    
+    @property
+    def files_dir(self) -> Path:
+        """Directory where memory files are stored."""
+        return self.memory_dir / "files"
+    
+    @property
+    def backup_dir(self) -> Path:
+        """Directory where backup files are stored."""
+        return self.memory_dir / "backups"
+    
+    @property
+    def temp_dir(self) -> Path:
+        """Directory for temporary files."""
+        return self.memory_dir / "temp"
+    
+    @property
+    def lock_dir(self) -> Path:
+        """Directory for file locks."""
+        return self.memory_dir / "locks"
+    
+    @property
+    def git_repo_dir(self) -> Path:
+        """Git repository directory (same as memory_dir base)."""
+        return self.memory_dir
 
 
 def load_configuration() -> Config:
@@ -108,17 +133,17 @@ def validate_configuration(config: Config) -> List[str]:
     for error in validation_errors:
         errors.append(f"ERROR: {error}")
     
-    # Check memory directory permissions
+    # Check memory files directory permissions
     try:
-        config.memory_dir.mkdir(parents=True, exist_ok=True)
+        config.files_dir.mkdir(parents=True, exist_ok=True)
         # Test write permissions
-        test_file = config.memory_dir / ".test_write"
+        test_file = config.files_dir / ".test_write"
         test_file.write_text("test")
         test_file.unlink()
     except PermissionError:
-        errors.append(f"ERROR: No write permission for memory directory: {config.memory_dir}")
+        errors.append(f"ERROR: No write permission for memory files directory: {config.files_dir}")
     except Exception as e:
-        errors.append(f"ERROR: Cannot access memory directory {config.memory_dir}: {e}")
+        errors.append(f"ERROR: Cannot access memory files directory {config.files_dir}: {e}")
     
     # Validate Git configuration
     if config.enable_git_sync:

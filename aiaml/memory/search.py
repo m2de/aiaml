@@ -252,7 +252,7 @@ def search_memories_optimized(keywords: List[str], config: Config) -> List[Dict[
         logger.debug(f"Starting optimized search for keywords: {normalized_keywords}")
         
         # Get all memory files
-        memory_files = list(config.memory_dir.glob("*.md"))
+        memory_files = list(config.files_dir.glob("*.md"))
         if not memory_files:
             logger.debug("No memory files found")
             return []

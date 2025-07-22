@@ -126,7 +126,7 @@ def get_platform_specific_defaults() -> Dict[str, Any]:
     platform_info = get_platform_info()
     
     defaults = {
-        'memory_dir': Path("memory/files"),
+        'memory_dir': Path.home() / ".aiaml",  # Base directory for all AIAML data
         'log_level': "INFO",
         'git_retry_attempts': 3,
         'git_retry_delay': 1.0,

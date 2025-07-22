@@ -247,7 +247,7 @@ class MemoryFileLock:
         self.timeout = timeout
         
         # Create lock file path in locks directory
-        lock_dir = config.memory_dir.parent / "locks"
+        lock_dir = config.lock_dir
         lock_filename = f"{memory_file_path.name}.lock"
         self.lock_file_path = lock_dir / lock_filename
         
@@ -312,7 +312,7 @@ def cleanup_stale_locks(config: Config, max_age_minutes: int = 10) -> int:
         Number of stale locks cleaned up
     """
     try:
-        lock_dir = config.memory_dir.parent / "locks"
+        lock_dir = config.lock_dir
         
         if not lock_dir.exists():
             return 0

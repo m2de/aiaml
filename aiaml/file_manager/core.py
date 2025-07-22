@@ -40,14 +40,15 @@ class FileManager:
         self.logger = logging.getLogger('aiaml.file_manager')
         self.platform_info = get_platform_info()
         
-        # Define directory structure
-        self.memory_dir = normalize_path(config.memory_dir)
-        self.backup_dir = self.memory_dir.parent / "backups"
-        self.temp_dir = self.memory_dir.parent / "temp"
-        self.lock_dir = self.memory_dir.parent / "locks"
+        # Define directory structure using config properties
+        self.base_dir = normalize_path(config.memory_dir)  # Base AIAML directory
+        self.memory_dir = normalize_path(config.files_dir)  # Memory files directory  
+        self.backup_dir = normalize_path(config.backup_dir)
+        self.temp_dir = normalize_path(config.temp_dir)
+        self.lock_dir = normalize_path(config.lock_dir)
         
-        # Git repository directory (parent of memory/files)
-        self.git_repo_dir = self.memory_dir.parent
+        # Git repository directory is the base directory
+        self.git_repo_dir = normalize_path(config.git_repo_dir)
         
         # Initialize sub-managers
         self.backup_manager = BackupManager(config, self.backup_dir)
