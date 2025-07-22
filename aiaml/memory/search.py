@@ -15,6 +15,37 @@ from .core import parse_memory_file_safe
 # Performance monitoring removed for simplicity
 
 
+def _get_matching_topics(memory_topics: List[str], keywords: List[str]) -> List[str]:
+    """
+    Filter topics to return only those that match the search keywords.
+    
+    Args:
+        memory_topics: List of topics from a memory
+        keywords: List of search keywords
+        
+    Returns:
+        List of topics that match any of the search keywords
+    """
+    if not memory_topics or not keywords:
+        return []
+    
+    matching_topics = []
+    normalized_keywords = [kw.lower().strip() for kw in keywords]
+    
+    for topic in memory_topics:
+        topic_lower = topic.lower()
+        for keyword in normalized_keywords:
+            if not keyword:
+                continue
+            
+            # Check if keyword matches topic (substring match)
+            if keyword in topic_lower:
+                matching_topics.append(topic)
+                break  # Avoid adding the same topic multiple times
+    
+    return matching_topics
+
+
 def _calculate_advanced_relevance_score(memory_data: Dict[str, Any], keywords: List[str]) -> float:
     """
     Calculate advanced relevance score using multiple factors:
@@ -204,8 +235,10 @@ def search_memories_optimized(keywords: List[str], config: Config) -> List[Dict[
                     'memory_id': memory_data['id'],
                     'agent': memory_data.get('agent'),
                     'user': memory_data.get('user'),
-                    'topics': memory_data.get('topics', []),
+                    'matching_topics': _get_matching_topics(memory_data.get('topics', []), keywords),
+                    'memory_topics': memory_data.get('topics', []),
                     'content_preview': memory_data.get('content', '')[:200] + "..." if len(memory_data.get('content', '')) > 200 else memory_data.get('content', ''),
+                    'content_preview_is_truncated': len(memory_data.get('content', '')) > 200,
                     'timestamp': memory_data.get('timestamp'),
                     'relevance_score': score
                 })
