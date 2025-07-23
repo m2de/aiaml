@@ -6,6 +6,8 @@ A simple local memory system for AI agents that provides persistent storage and 
 
 ### MCP Client Setup (Claude Desktop, etc.)
 
+Add this to your MCP client configuration (e.g., Claude Desktop's `claude_desktop_config.json`):
+
 **Minimal setup** (uses defaults):
 ```json
 {
@@ -18,7 +20,7 @@ A simple local memory system for AI agents that provides persistent storage and 
 }
 ```
 
-Add this to your MCP client configuration (e.g., Claude Desktop's `claude_desktop_config.json`):
+**Customised setup**
 
 ```json
 {
