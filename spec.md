@@ -17,7 +17,7 @@ AIAML operates as a Model Context Protocol (MCP) server providing exactly three 
 2. **`think`** - Search for relevant memories using keywords
 3. **`recall`** - Retrieve complete memory details by ID
 
-The server supports both local and remote MCP connections, allowing deployment flexibility for different use cases and environments.
+The server supports local MCP connections via stdio, ensuring a private, file-system-based memory store.
 
 ### Memory Storage Format
 Memories are stored as individual markdown files with YAML frontmatter containing metadata and markdown content containing the actual memory text.
@@ -56,7 +56,7 @@ Stores a new memory entry in the system.
 **Behavior:**
 1. Generates unique 8-character memory ID
 2. Creates ISO 8601 timestamp
-3. Writes memory file with YAML frontmatter and content
+3. Writes memory file with YAML frontmatter and content atomically
 4. Optionally triggers background Git synchronization (if enabled)
 5. Returns success response with memory ID
 
@@ -100,23 +100,26 @@ Array of matching memories (maximum 25 results), sorted by relevance score (high
   {
     "id": "abc12345",
     "timestamp": "2024-01-15T10:30:00.123456",
-    "relevance_score": 8,
+    "relevance_score": 8.5,
     "matching_keywords": ["python", "programming"]
   },
   {
     "id": "def67890",
     "timestamp": "2024-01-14T15:45:00.789012", 
-    "relevance_score": 5,
+    "relevance_score": 5.2,
     "matching_keywords": ["python"]
   }
 ]
 ```
 
 **Relevance Scoring Algorithm:**
-- Topic matches are weighted 2x higher than content matches
-- Exact word boundary matches receive bonus points
-- Score = (topic_matches × 2) + content_matches + user_matches + agent_matches + exact_word_bonus
-- Results sorted by relevance score (descending), then by timestamp (most recent first) as tiebreaker
+- An advanced relevance scoring algorithm is used, incorporating multiple factors:
+    - **Keyword Frequency and Position:**  Earlier mentions of a keyword in the content are weighted more heavily.
+    - **Topic Matching:** Exact and partial matches in topics are heavily weighted.
+    - **Content Length Normalization:**  Scores are adjusted to avoid bias towards very long or very short memories.
+    - **Recency Boost:** More recent memories receive a slight boost in relevance.
+    - **Word Boundary Matches:** Exact word matches are scored higher than partial matches.
+- Results are sorted by relevance score (descending), then by timestamp (most recent first) as a tiebreaker.
 
 **Error Handling:**
 If search fails, returns:
@@ -209,18 +212,6 @@ If recall fails entirely:
 - **Example**: Run one command and have the memory system working with my AI assistant
 - **Expectation**: No complex configuration, works out-of-the-box, clear documentation for any optional features
 
-#### Shared Memory Service
-**As a human user, I want to run the memory system as a shared service** so that multiple AI agents and applications can access the same memory store without conflicts.
-
-- **Example**: Run AIAML as a remote server that my coding assistant, writing helper, and personal AI can all connect to
-- **Expectation**: All AI agents share the same memory context, enabling seamless collaboration and consistency
-
-#### Secure Remote Access
-**As a human user, I want remote memory connections to be secured with authentication** so that my personal memories are protected from unauthorized access.
-
-- **Example**: Set an API key environment variable and only allow remote connections with valid authentication
-- **Expectation**: Local connections work without authentication for convenience, but remote connections require proper credentials
-
 #### Privacy Control
 **As a human user, I want my memories stored locally on my device** so that I maintain complete control over my personal information and conversation history.
 
@@ -264,18 +255,6 @@ If recall fails entirely:
 
 - **Need**: Ability to discover and use memories created by coding assistants, writing helpers, or other specialized agents
 - **Expectation**: Seamless collaboration where context is shared appropriately between different AI tools
-
-#### Remote Connection Support
-**As an AI agent, I want to connect to memory services both locally and remotely** so that I can access shared memory stores regardless of deployment architecture.
-
-- **Need**: Ability to connect to AIAML servers running on the same machine or on remote servers
-- **Expectation**: Seamless operation whether connecting locally or over network, with consistent tool behavior
-
-#### Secure Authentication
-**As an AI agent, I want to authenticate securely when connecting to remote memory services** so that I can access authorized memory stores while respecting security boundaries.
-
-- **Need**: Ability to provide API key authentication for remote connections
-- **Expectation**: Clear error messages when authentication fails, seamless operation when properly authenticated
 
 #### Privacy Awareness
 **As an AI agent, I want to understand privacy implications of memory storage** so that I handle sensitive information appropriately.
@@ -331,146 +310,111 @@ If recall fails entirely:
 - **Zero Configuration**: Run with sensible defaults without requiring configuration files
 - **Cross-Platform**: Work consistently across Windows, macOS, and Linux operating systems
 - **Dependency Management**: Automatically handle all required dependencies during installation
-- **Single Command Start**: Enable server startup with a single command (e.g., `npx aiaml-server`, `uv run aiaml-server`, `./run_server.sh`)
-- **MCP Library Requirement**: Must include Model Context Protocol library with CLI support (e.g., `mcp[cli]>=1.0.0` for Python)
-- **Minimum Runtime Requirements**: Support modern runtime versions (e.g., Python >=3.10, Node.js >=18, etc.)
-- **Local and Remote MCP Support**: Support both local process connections and remote network connections for flexible deployment scenarios
+- **Single Command Start**: Enable server startup with a single command (e.g., `uv run aiaml-server`, `./run_server.sh`)
+- **MCP Library Requirement**: Must include a Model Context Protocol library that supports `stdio` transport.
+- **Minimum Runtime Requirements**: Support modern runtime versions (e.g., Python >=3.10)
 
 ### Core Functionality
 - **Three MCP Tools Only**: The server must provide exactly three tools: `remember`, `think`, and `recall`
 - **MCP Server Initialization**: Initialize server with name "AI Agnostic Memory Layer"
-- **Connection Support**: Support both local process connections and remote network connections
-- **Memory ID Generation**: Generate unique 8-character hexadecimal identifiers using UUID4 (first 8 characters after removing hyphens)
-- **File-Based Storage**: Store memories as markdown files with YAML frontmatter in a dedicated directory
-- **Relevance Scoring**: Implement keyword-based relevance scoring with topic matches weighted 2x higher than content matches
-- **Search Limits**: Return maximum 25 results from `think` searches, sorted by relevance score
-- **Server Entry Point**: Provide main execution entry point that starts the MCP server
+- **Connection Support**: Support local process connections via `stdio`.
+- **Memory ID Generation**: Generate unique 8-character hexadecimal identifiers.
+- **File-Based Storage**: Store memories as markdown files with YAML frontmatter in a dedicated directory.
+- **Search Limits**: Return a configurable maximum number of results from `think` searches (e.g., 25), sorted by relevance score.
+- **Server Entry Point**: Provide a main execution entry point that starts the MCP server.
 
 ### File System Structure
-- **Memory Directory**: Create and maintain a dedicated directory for memory files (e.g., `memory/files/`)
-- **File Naming**: Use format `YYYYMMDD_HHMMSS_[memory-id].md` for all memory files
-- **File Format**: YAML frontmatter with required fields: `id`, `timestamp`, `agent`, `user`, `topics`
-- **Content Encoding**: Use UTF-8 encoding for all file operations
-- **Directory Creation**: Automatically create memory directory if it doesn't exist
+- **Base Directory**: A base directory (e.g., `~/.aiaml/`) should house all application data.
+- **Memory Directory**: A dedicated subdirectory for memory files (e.g., `files/`).
+- **Ancillary Directories**: Subdirectories for backups, temporary files, and file locks.
+- **File Naming**: Use format `YYYYMMDD_HHMMSS_[memory-id].md` for all memory files.
+- **File Format**: YAML frontmatter with required fields: `id`, `timestamp`, `agent`, `user`, `topics`.
+- **Content Encoding**: Use UTF-8 encoding for all file operations.
+- **Directory Creation**: Automatically create the directory structure if it doesn't exist.
 
 ### Optional GitHub Synchronization
-- **Environment Configuration**: Support `AIAML_ENABLE_SYNC` environment variable (default: "true")
-- **Remote URL Configuration**: Support `AIAML_GITHUB_REMOTE` environment variable for specifying Git remote (optional)
-- **Git Repository Integration**: If enabled, automatically sync new memories to a Git repository
-- **Background Processing**: Run Git operations in background threads to avoid blocking memory creation
-- **Error Isolation**: Git sync failures must not affect memory storage operations
-- **Commit Format**: Use commit message format: "Add memory [memory-id] ([filename])"
-- **Git Operations**: Perform `git add`, `git commit`, and `git push origin main` for each new memory
-- **Working Directory**: Execute Git commands from the memory directory parent (e.g., `memory/` folder)
-- **File Path**: Add files using relative path `files/[filename]` from the Git repository root
-
-### Security Configuration
-- **API Key Authentication**: Support `AIAML_API_KEY` environment variable for securing remote connections
-- **Local Connection Security**: Local process connections bypass authentication for convenience
-- **Remote Connection Security**: Remote network connections require valid API key authentication
-- **Key Validation**: Validate API key on each remote connection request
-- **Authentication Failure**: Return appropriate error responses for invalid or missing API keys
-- **Key Management**: API key should be a simple string token, generated and managed by the user
+- **Environment Configuration**: Support an environment variable to enable/disable the feature (e.g., `AIAML_ENABLE_SYNC`).
+- **Remote URL Configuration**: Support an environment variable for specifying the Git remote URL (e.g., `AIAML_GITHUB_REMOTE`).
+- **Git Repository Integration**: If enabled, automatically sync new memories to a Git repository.
+- **Background Processing**: Run Git operations in the background to avoid blocking memory creation.
+- **Error Isolation**: Git sync failures must not affect memory storage operations.
+- **Commit Format**: Use a consistent commit message format (e.g., "Add memory [memory-id]").
 
 ### Memory Processing
-- **Frontmatter Parsing**: Parse YAML frontmatter to extract metadata using simple key-value parsing
-- **Topic Parsing**: Handle topics as comma-separated list in square brackets format: `[topic1, topic2, topic3]`
-- **Frontmatter Validation**: Require frontmatter to start with `---\n` and split on `---\n` delimiters
-- **Key-Value Extraction**: Parse each line containing `:` as key-value pairs, trimming whitespace
-- **Topic List Processing**: Strip square brackets from topics value and split on commas, filtering empty strings
-- **Timestamp Format**: Use ISO 8601 format for all timestamps
-- **Error Handling**: Gracefully handle malformed files by skipping them during search operations (return None from parsing)
-- **Case-Insensitive Search**: Perform all keyword matching in lowercase for consistency
-- **Content Extraction**: Extract content as everything after the closing `---\n` delimiter, trimmed of whitespace
+- **Frontmatter Parsing**: Parse YAML frontmatter to extract metadata.
+- **Timestamp Format**: Use ISO 8601 format for all timestamps.
+- **Error Handling**: Gracefully handle malformed files by skipping them during search operations.
+- **Case-Insensitive Search**: Perform all keyword matching in lowercase for consistency.
 
 ### Tool Behavior Specifications
-- **remember Tool**: Must generate unique ID using UUID4 (first 8 hex chars), create ISO 8601 timestamp, format frontmatter, write file atomically, and return ID with success message
-- **think Tool**: Must search all `*.md` files in memory directory, calculate relevance scores, sort results, limit to 25 items, and return structured results with matching keywords
-- **recall Tool**: Must find memory files using glob pattern `*_{memory-id}.md`, parse content, validate ID matches, and return complete memory objects or error for missing IDs
+- **remember Tool**: Must generate a unique ID, create a timestamp, format frontmatter, write the file atomically, and return the ID with a success message.
+- **think Tool**: Must search all `*.md` files in the memory directory, calculate relevance scores using the advanced algorithm, sort results, and return a structured list of matches.
+- **recall Tool**: Must find memory files by ID, parse the content, and return complete memory objects or an error for missing IDs.
 
 ### Data Integrity
-- **Atomic Operations**: Ensure memory files are written completely or not at all
-- **Unique IDs**: Guarantee memory IDs are unique across all stored memories
-- **File Consistency**: Maintain consistent file format across all memory files
-- **Content Preservation**: Preserve exact content formatting including whitespace and markdown
-- **Metadata Validation**: Validate required frontmatter fields are present and properly formatted
+- **Atomic Operations**: Ensure memory files are written completely or not at all.
+- **Unique IDs**: Guarantee memory IDs are unique.
+- **File Locking**: Implement a file locking mechanism to prevent race conditions during concurrent access.
+- **Automatic Backups**: Automatically create backups of memories when they are modified or deleted.
 
 ### Search Algorithm Requirements
-- **Multi-Field Search**: Search across topics, content, user, and agent fields
-- **Text Processing**: Convert all text to lowercase before matching for case-insensitive search
-- **Relevance Calculation**: 
-  - Topic matches: weight × 2
-  - Content matches: weight × 1  
-  - User field matches: weight × 1
-  - Agent field matches: weight × 1
-  - Exact word boundary matches: bonus points using regex `\b{keyword}\b`
-- **Score Calculation**: `(topic_matches × 2) + content_matches + user_matches + agent_matches + exact_matches`
-- **Result Sorting**: Primary sort by relevance score (descending), secondary sort by timestamp (newest first)
-- **Keyword Processing**: Convert all keywords to lowercase before matching
-- **Match Tracking**: Track which keywords matched for each result, removing duplicates
-- **Match Counting**: Use simple string `.count()` method for substring matching in each field
+- **Multi-Field Search**: Search across topics and content.
+- **Text Processing**: Convert all text to lowercase before matching.
+- **Advanced Relevance Calculation**: Implement a scoring model that considers:
+    - Term frequency and position.
+    - Topic matching (exact and partial).
+    - Content length normalization.
+    - Recency of the memory.
+    - Bonus for exact word boundary matches.
+- **Result Sorting**: Primary sort by relevance score (descending), secondary sort by timestamp (newest first).
+- **Performance**: Employ techniques like in-memory indexing to ensure fast search performance.
 
 ### Performance Requirements
-- **Memory Creation**: Complete `remember` operations in under 1 second
-- **Search Performance**: Complete `think` operations across thousands of memories in under 2 seconds  
-- **File Operations**: Use efficient file I/O operations to minimize disk access
-- **Memory Usage**: Minimize memory footprint during search operations
-- **Concurrent Access**: Handle multiple simultaneous requests without file corruption
-- **Network Performance**: Support efficient remote MCP connections with minimal latency overhead
-- **Connection Handling**: Maintain stable connections for both local and remote MCP clients
+- **Memory Creation**: Complete `remember` operations quickly (e.g., under 1 second).
+- **Search Performance**: Complete `think` operations efficiently, even with thousands of memories.
+- **File Operations**: Use efficient file I/O to minimize disk access.
+- **Memory Usage**: Minimize memory footprint during search operations.
+- **Concurrent Access**: Handle multiple simultaneous requests without data corruption.
 
 ### Error Handling
-- **Graceful Degradation**: Continue operating even if individual memory files are corrupted
-- **Descriptive Errors**: Return clear error messages for debugging
-- **Exception Safety**: Catch and handle all exceptions to prevent server crashes
-- **Logging**: Log errors for debugging while continuing operation
-- **Validation**: Validate all input parameters before processing
-- **Authentication Errors**: Return clear error messages for authentication failures without exposing system details
-- **Security Logging**: Log authentication attempts and failures for security monitoring
+- **Graceful Degradation**: Continue operating even if individual memory files are corrupted.
+- **Descriptive Errors**: Return clear error messages for debugging.
+- **Exception Safety**: Catch and handle all exceptions to prevent server crashes.
+- **Logging**: Log errors for debugging while continuing operation.
+- **Input Validation**: Validate all input parameters before processing.
 
 ## Validation Criteria
 
 ### Functional Validation
-- **Tool Interface**: Server provides exactly three MCP tools with correct parameter types and return formats
-- **Memory Storage**: Successfully stores memories with all required metadata fields
-- **Search Accuracy**: Returns relevant memories based on keyword matching with proper relevance scoring
-- **ID Uniqueness**: Generates unique 8-character memory IDs for all stored memories
-- **File Format**: Creates correctly formatted markdown files with YAML frontmatter
-- **Cross-Platform**: Works consistently across different operating systems and Python environments
-- **Git Sync (Optional)**: If enabled, successfully commits and pushes new memories to Git repository without affecting core functionality
+- **Tool Interface**: Server provides exactly three MCP tools with correct parameter types and return formats.
+- **Memory Storage**: Successfully stores memories with all required metadata fields.
+- **Search Accuracy**: Returns relevant memories based on the advanced relevance scoring algorithm.
+- **ID Uniqueness**: Generates unique 8-character memory IDs.
+- **File Format**: Creates correctly formatted markdown files with YAML frontmatter.
+- **Cross-Platform**: Works consistently across different operating systems.
+- **Git Sync (Optional)**: If enabled, successfully commits and pushes new memories to a Git repository.
 
 ### Performance Validation  
-- **Storage Speed**: `remember` tool completes within 1 second for typical memory content
-- **Search Speed**: `think` tool returns results within 2 seconds across 1000+ memories
-- **Scalability**: Maintains performance as memory collection grows to 10,000+ items
-- **Memory Efficiency**: Uses reasonable system memory during operations
-- **File I/O**: Efficient disk operations without excessive file system calls
+- **Storage Speed**: `remember` tool completes quickly.
+- **Search Speed**: `think` tool returns results efficiently.
+- **Scalability**: Maintains performance as the number of memories grows.
 
 ### Data Integrity Validation
-- **File Consistency**: All memory files maintain consistent YAML frontmatter format
-- **Content Preservation**: Memory content stored and retrieved without modification
-- **Metadata Accuracy**: All required metadata fields present and correctly formatted
-- **Search Reliability**: Search results remain consistent across multiple identical queries
-- **Error Recovery**: System continues operating despite individual corrupted memory files
+- **File Consistency**: All memory files maintain a consistent format.
+- **Content Preservation**: Memory content is stored and retrieved without modification.
+- **Error Recovery**: The system can recover from errors and continue operating.
+- **Concurrency**: Handles concurrent requests correctly.
 
 ### API Compatibility
-- **MCP Compliance**: Full compatibility with Model Context Protocol specifications
-- **Tool Signatures**: Correct parameter names, types, and descriptions for AI agent understanding
-- **Return Formats**: Consistent JSON response structures across all tools
-- **Error Handling**: Proper error responses that don't break AI agent integrations
-- **Documentation**: Tool descriptions clear enough for AI agents to use without human explanation
-- **Authentication Integration**: Seamless API key authentication for remote connections within MCP protocol
+- **MCP Compliance**: Full compatibility with Model Context Protocol specifications for `stdio` transport.
+- **Tool Signatures**: Correct parameter names, types, and descriptions for AI agent understanding.
+- **Return Formats**: Consistent JSON response structures across all tools.
 
 ### Deployment Validation
-- **Installation Simplicity**: Can be installed with a single package manager command
-- **Startup Speed**: Server starts and becomes ready to accept connections within 5 seconds
-- **Dependency Resolution**: All required dependencies install automatically without manual intervention
-- **Platform Compatibility**: Successfully runs on Windows, macOS, and Linux without platform-specific modifications
-- **Default Configuration**: Works out-of-the-box without requiring configuration files or environment variables (except optional Git sync and API key for remote access)
-- **Resource Requirements**: Minimal system resource requirements suitable for development and production environments
-- **Connection Support**: Successfully handles both local process connections and remote network connections
-- **Multi-Client Support**: Can serve multiple concurrent MCP clients without performance degradation
-- **Security Validation**: API key authentication works correctly for remote connections, local connections bypass authentication
-- **Authentication Errors**: Clear error messages for authentication failures, proper security logging
+- **Installation Simplicity**: Can be installed with a single package manager command.
+- **Startup Speed**: Server starts and becomes ready to accept connections quickly.
+- **Dependency Resolution**: All required dependencies install automatically.
+- **Default Configuration**: Works out-of-the-box without requiring extensive setup.
+- **Resource Requirements**: Minimal system resource requirements.
 
 This specification provides complete implementation guidance for recreating the AIAML MCP server in any programming language while maintaining full compatibility with the existing API.
