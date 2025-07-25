@@ -122,6 +122,7 @@ class RepositoryStateManager:
             RepositoryInfo containing detailed repository state
         """
         if self._cached_repo_info is not None:
+            self.logger.debug(f"📦 Using cached repository info: {self._cached_repo_info.state}")
             return self._cached_repo_info
         
         try:
@@ -163,7 +164,11 @@ class RepositoryStateManager:
             # Cache the result
             self._cached_repo_info = repo_info
             
-            self.logger.debug(f"Repository info: {repo_info}")
+            self.logger.debug(f"📊 Complete repository info: state={repo_info.state}, "
+                            f"local_exists={repo_info.local_exists}, "
+                            f"remote_exists={repo_info.remote_exists}, "
+                            f"default_branch={repo_info.default_branch}, "
+                            f"needs_sync={repo_info.needs_sync}")
             return repo_info
             
         except Exception as e:
@@ -188,34 +193,49 @@ class RepositoryStateManager:
             Default branch name (e.g., "main", "master", "develop")
         """
         if self._cached_default_branch is not None:
+            self.logger.debug(f"📦 Using cached default branch: {self._cached_default_branch}")
             return self._cached_default_branch
         
         try:
+            self.logger.debug("🔍 Starting default branch detection")
+            
             # Try to detect from remote if available
             if self.config.git_remote_url:
+                self.logger.debug(f"🌐 Attempting remote branch detection for: {self.config.git_remote_url}")
                 detected_branch = detect_remote_default_branch(self.config.git_remote_url)
                 if detected_branch:
                     self._cached_default_branch = detected_branch
-                    self.logger.debug(f"Detected default branch from remote: {detected_branch}")
+                    self.logger.debug(f"✅ Detected default branch from remote: {detected_branch}")
                     return detected_branch
+                else:
+                    self.logger.debug("❌ Remote branch detection failed, trying local detection")
+            else:
+                self.logger.debug("ℹ️ No remote URL configured, skipping remote branch detection")
             
             # Try to detect from local repository
             if self.git_dir.exists():
+                self.logger.debug("🏠 Attempting local branch detection")
                 local_branch = get_current_local_branch(self.git_repo_dir)
                 if local_branch:
                     self._cached_default_branch = local_branch
-                    self.logger.debug(f"Using current local branch as default: {local_branch}")
+                    self.logger.debug(f"✅ Using current local branch as default: {local_branch}")
                     return local_branch
+                else:
+                    self.logger.debug("❌ Local branch detection failed - no current branch found")
+            else:
+                self.logger.debug("ℹ️ No local .git directory found, skipping local branch detection")
             
             # Fallback to "main"
             self._cached_default_branch = "main"
-            self.logger.debug("Using fallback default branch: main")
+            self.logger.warning("⚠️ Branch detection failed, falling back to 'main' branch")
+            self.logger.debug("💡 Consider manually specifying the default branch if 'main' is incorrect")
             return "main"
             
         except Exception as e:
-            self.logger.error(f"Error detecting default branch: {e}", exc_info=True)
+            self.logger.error(f"❌ Error detecting default branch: {e}", exc_info=True)
             # Safe fallback
             self._cached_default_branch = "main"
+            self.logger.warning("⚠️ Exception during branch detection, falling back to 'main' branch")
             return "main"
     
 

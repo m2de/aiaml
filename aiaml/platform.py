@@ -112,8 +112,8 @@ def normalize_path(path: Union[str, Path]) -> Path:
     if isinstance(path, str):
         path = Path(path)
     
-    # Resolve to absolute path and normalize
-    return path.resolve()
+    # Expand user home directory (~) first, then resolve to absolute path
+    return path.expanduser().resolve()
 
 
 def get_platform_specific_defaults() -> Dict[str, Any]:

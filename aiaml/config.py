@@ -39,9 +39,13 @@ class Config:
     
     def __post_init__(self):
         """Validate configuration after initialization."""
-        # Convert string path to Path object if needed
+        # Convert string path to Path object and normalize (expand ~ and resolve)
         if isinstance(self.memory_dir, str):
             self.memory_dir = Path(self.memory_dir)
+        
+        # Normalize the memory directory path to properly handle ~ expansion
+        from .platform import normalize_path
+        self.memory_dir = normalize_path(self.memory_dir)
         
         # Validate log level
         valid_log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
