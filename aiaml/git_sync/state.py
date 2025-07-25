@@ -1,6 +1,7 @@
 """Repository state management for enhanced Git synchronization."""
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import Config
-from ..platform import get_git_executable, get_platform_info
+from ..platform import get_git_executable, get_platform_info, get_platform_specific_git_config
 from .utils import GitSyncResult
 
 
@@ -61,6 +62,7 @@ class RepositoryStateManager:
         # Cache for detected information to avoid repeated operations
         self._cached_default_branch: Optional[str] = None
         self._cached_repo_info: Optional[RepositoryInfo] = None
+        self._temp_backup_dir: Optional[Path] = None
     
     def detect_repository_state(self) -> RepositoryState:
         """
@@ -431,6 +433,441 @@ class RepositoryStateManager:
         else:
             return False
     
+    def clone_existing_repository(self) -> GitSyncResult:
+        """
+        Clone an existing remote repository to the local directory.
+        
+        This method performs the following operations:
+        1. Validates that a remote URL is configured
+        2. Ensures the local directory is empty or doesn't exist
+        3. Clones the remote repository using Git clone
+        4. Validates the cloned repository structure
+        5. Sets up proper Git configuration
+        
+        Returns:
+            GitSyncResult indicating success or failure of the clone operation
+            
+        Requirements: 1.3, 3.1, 3.2
+        """
+        try:
+            self.logger.info("Starting repository clone operation")
+            
+            # Validate that remote URL is configured
+            if not self.config.git_remote_url:
+                error_msg = "Cannot clone repository: no remote URL configured"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="clone_repository",
+                    error_code="NO_REMOTE_URL"
+                )
+            
+            # Check if local repository already exists
+            if self.git_dir.exists():
+                error_msg = "Cannot clone repository: local Git repository already exists"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="clone_repository",
+                    error_code="LOCAL_REPO_EXISTS"
+                )
+            
+            # Ensure parent directory exists
+            self.git_repo_dir.parent.mkdir(parents=True, exist_ok=True)
+            
+            # If the target directory exists and is not empty, we need to handle it
+            if self.git_repo_dir.exists():
+                # Check if directory is empty
+                if any(self.git_repo_dir.iterdir()):
+                    # Directory exists and is not empty
+                    # Check if it contains only expected files (like .gitignore, README, etc.)
+                    existing_files = list(self.git_repo_dir.iterdir())
+                    allowed_files = {'.gitignore', 'README.md', 'README.txt', 'LICENSE', 'LICENSE.txt'}
+                    
+                    non_allowed_files = [
+                        f for f in existing_files 
+                        if f.name not in allowed_files and not f.name.startswith('.')
+                    ]
+                    
+                    if non_allowed_files:
+                        error_msg = f"Cannot clone repository: target directory contains files: {[f.name for f in non_allowed_files]}"
+                        self.logger.error(error_msg)
+                        return GitSyncResult(
+                            success=False,
+                            message=error_msg,
+                            operation="clone_repository",
+                            error_code="TARGET_DIR_NOT_EMPTY"
+                        )
+                    else:
+                        # Directory contains only allowed files, move them temporarily
+                        temp_backup_dir = self.git_repo_dir.parent / f"{self.git_repo_dir.name}_backup_temp"
+                        temp_backup_dir.mkdir(exist_ok=True)
+                        
+                        # Move allowed files to temporary location
+                        for file_path in existing_files:
+                            shutil.move(str(file_path), str(temp_backup_dir / file_path.name))
+                        
+                        # Remove the now-empty directory
+                        self.git_repo_dir.rmdir()
+                        
+                        # Store backup directory for later restoration
+                        self._temp_backup_dir = temp_backup_dir
+            
+            # Perform the Git clone operation
+            self.logger.info(f"Cloning repository from {self.config.git_remote_url}")
+            
+            git_executable = get_git_executable()
+            platform_info = get_platform_info()
+            
+            # Use git clone with appropriate options
+            clone_command = [
+                git_executable, "clone",
+                self.config.git_remote_url,
+                str(self.git_repo_dir)
+            ]
+            
+            # Add additional clone options for better reliability
+            clone_command.extend([
+                "--single-branch",  # Only clone the default branch initially
+                "--depth", "1"      # Shallow clone for faster operation
+            ])
+            
+            result = subprocess.run(
+                clone_command,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout for clone operations
+                shell=platform_info.is_windows
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"Git clone failed: {result.stderr if result.stderr else result.stdout}"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="clone_repository",
+                    error_code="GIT_CLONE_FAILED"
+                )
+            
+            self.logger.info("Repository cloned successfully")
+            
+            # Validate the cloned repository structure
+            validation_result = self._validate_cloned_repository()
+            if not validation_result.success:
+                return validation_result
+            
+            # Set up Git configuration for the cloned repository
+            setup_result = self._setup_cloned_repository_config()
+            if not setup_result.success:
+                # Log warning but don't fail the clone operation
+                self.logger.warning(f"Failed to set up cloned repository configuration: {setup_result.message}")
+            
+            # Restore any backed up files
+            if hasattr(self, '_temp_backup_dir') and self._temp_backup_dir and self._temp_backup_dir.exists():
+                try:
+                    for backup_file in self._temp_backup_dir.iterdir():
+                        target_path = self.git_repo_dir / backup_file.name
+                        if not target_path.exists():  # Don't overwrite cloned files
+                            shutil.move(str(backup_file), str(target_path))
+                    
+                    # Clean up temporary backup directory
+                    if not any(self._temp_backup_dir.iterdir()):  # Only remove if empty
+                        self._temp_backup_dir.rmdir()
+                    else:
+                        # If not empty, remove remaining files first
+                        for remaining_file in self._temp_backup_dir.iterdir():
+                            if remaining_file.is_file():
+                                remaining_file.unlink()
+                            elif remaining_file.is_dir():
+                                shutil.rmtree(remaining_file)
+                        self._temp_backup_dir.rmdir()
+                    
+                    self._temp_backup_dir = None
+                    self.logger.debug("Restored backed up files after clone")
+                except Exception as e:
+                    self.logger.warning(f"Failed to restore backed up files: {e}")
+            
+            # Clear cache to force re-detection of repository state
+            self.clear_cache()
+            
+            self.logger.info(f"Repository clone completed successfully from {self.config.git_remote_url}")
+            
+            return GitSyncResult(
+                success=True,
+                message=f"Repository cloned successfully from {self.config.git_remote_url}",
+                operation="clone_repository"
+            )
+            
+        except subprocess.TimeoutExpired:
+            error_msg = "Repository clone operation timed out"
+            self.logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="clone_repository",
+                error_code="CLONE_TIMEOUT"
+            )
+            
+        except Exception as e:
+            error_msg = f"Unexpected error during repository clone: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="clone_repository",
+                error_code="CLONE_UNEXPECTED_ERROR"
+            )
+    
+    def _validate_cloned_repository(self) -> GitSyncResult:
+        """
+        Validate the structure and integrity of a cloned repository.
+        
+        This method checks:
+        1. .git directory exists and is valid
+        2. Repository has proper Git configuration
+        3. Remote origin is properly configured
+        4. Working directory is clean
+        
+        Returns:
+            GitSyncResult indicating validation success or failure
+        """
+        try:
+            self.logger.debug("Validating cloned repository structure")
+            
+            # Check if .git directory exists
+            if not self.git_dir.exists():
+                error_msg = "Cloned repository validation failed: .git directory not found"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="MISSING_GIT_DIR"
+                )
+            
+            git_executable = get_git_executable()
+            platform_info = get_platform_info()
+            
+            # Validate that it's a proper Git repository
+            result = subprocess.run(
+                [git_executable, "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                cwd=self.git_repo_dir,
+                timeout=30,
+                shell=platform_info.is_windows
+            )
+            
+            if result.returncode != 0:
+                error_msg = f"Cloned repository validation failed: not a valid Git repository: {result.stderr}"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="INVALID_GIT_REPO"
+                )
+            
+            # Check remote configuration
+            result = subprocess.run(
+                [git_executable, "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                cwd=self.git_repo_dir,
+                timeout=10,
+                shell=platform_info.is_windows
+            )
+            
+            if result.returncode != 0:
+                error_msg = "Cloned repository validation failed: origin remote not configured"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="MISSING_ORIGIN_REMOTE"
+                )
+            
+            # Verify remote URL matches configuration
+            actual_remote_url = result.stdout.strip()
+            if actual_remote_url != self.config.git_remote_url:
+                error_msg = f"Cloned repository validation failed: remote URL mismatch (expected: {self.config.git_remote_url}, actual: {actual_remote_url})"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="REMOTE_URL_MISMATCH"
+                )
+            
+            # Check if we have a valid branch
+            result = subprocess.run(
+                [git_executable, "branch", "--show-current"],
+                capture_output=True,
+                text=True,
+                cwd=self.git_repo_dir,
+                timeout=10,
+                shell=platform_info.is_windows
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                error_msg = "Cloned repository validation failed: no current branch found"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="NO_CURRENT_BRANCH"
+                )
+            
+            current_branch = result.stdout.strip()
+            self.logger.debug(f"Cloned repository validation successful, current branch: {current_branch}")
+            
+            return GitSyncResult(
+                success=True,
+                message=f"Cloned repository validation successful (branch: {current_branch})",
+                operation="validate_cloned_repo"
+            )
+            
+        except subprocess.TimeoutExpired:
+            error_msg = "Cloned repository validation timed out"
+            self.logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="validate_cloned_repo",
+                error_code="VALIDATION_TIMEOUT"
+            )
+            
+        except Exception as e:
+            error_msg = f"Unexpected error during cloned repository validation: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="validate_cloned_repo",
+                error_code="VALIDATION_UNEXPECTED_ERROR"
+            )
+    
+    def _setup_cloned_repository_config(self) -> GitSyncResult:
+        """
+        Set up Git configuration for a cloned repository.
+        
+        This method ensures that the cloned repository has proper:
+        1. User name and email configuration
+        2. Platform-specific Git settings
+        3. Any additional AIAML-specific configuration
+        
+        Returns:
+            GitSyncResult indicating setup success or failure
+        """
+        try:
+            self.logger.debug("Setting up cloned repository configuration")
+            
+            git_executable = get_git_executable()
+            platform_info = get_platform_info()
+            
+            # Check if user.name is configured
+            result = subprocess.run(
+                [git_executable, "config", "user.name"],
+                capture_output=True,
+                text=True,
+                cwd=self.git_repo_dir,
+                timeout=10,
+                shell=platform_info.is_windows
+            )
+            
+            if result.returncode != 0:
+                # Set default user name
+                subprocess.run(
+                    [git_executable, "config", "user.name", "AIAML Memory System"],
+                    check=True,
+                    capture_output=True,
+                    cwd=self.git_repo_dir,
+                    timeout=10,
+                    shell=platform_info.is_windows
+                )
+                self.logger.debug("Set default Git user.name for cloned repository")
+            
+            # Check if user.email is configured
+            result = subprocess.run(
+                [git_executable, "config", "user.email"],
+                capture_output=True,
+                text=True,
+                cwd=self.git_repo_dir,
+                timeout=10,
+                shell=platform_info.is_windows
+            )
+            
+            if result.returncode != 0:
+                # Set default user email
+                subprocess.run(
+                    [git_executable, "config", "user.email", "aiaml@localhost"],
+                    check=True,
+                    capture_output=True,
+                    cwd=self.git_repo_dir,
+                    timeout=10,
+                    shell=platform_info.is_windows
+                )
+                self.logger.debug("Set default Git user.email for cloned repository")
+            
+            # Apply platform-specific Git configuration
+            platform_git_config = get_platform_specific_git_config()
+            for config_key, config_value in platform_git_config.items():
+                try:
+                    subprocess.run(
+                        [git_executable, "config", config_key, config_value],
+                        check=True,
+                        capture_output=True,
+                        cwd=self.git_repo_dir,
+                        timeout=10,
+                        shell=platform_info.is_windows
+                    )
+                    self.logger.debug(f"Set Git config {config_key} = {config_value} for cloned repository")
+                except subprocess.CalledProcessError as e:
+                    self.logger.warning(f"Failed to set Git config {config_key} for cloned repository: {e}")
+            
+            self.logger.debug("Cloned repository configuration setup completed")
+            
+            return GitSyncResult(
+                success=True,
+                message="Cloned repository configuration setup completed",
+                operation="setup_cloned_repo_config"
+            )
+            
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Failed to set up cloned repository configuration: {e.stderr if e.stderr else str(e)}"
+            self.logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="setup_cloned_repo_config",
+                error_code="CONFIG_SETUP_FAILED"
+            )
+            
+        except subprocess.TimeoutExpired:
+            error_msg = "Cloned repository configuration setup timed out"
+            self.logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="setup_cloned_repo_config",
+                error_code="CONFIG_SETUP_TIMEOUT"
+            )
+            
+        except Exception as e:
+            error_msg = f"Unexpected error during cloned repository configuration setup: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="setup_cloned_repo_config",
+                error_code="CONFIG_SETUP_UNEXPECTED_ERROR"
+            )
+
     def clear_cache(self) -> None:
         """Clear cached repository information to force re-detection."""
         self._cached_default_branch = None
