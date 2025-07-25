@@ -7,7 +7,7 @@ from pathlib import Path
 from ..platform import get_git_executable, get_platform_info
 from .branch_utils import check_remote_branch_exists, check_local_branch_exists, get_current_local_branch, check_upstream_tracking
 from .remote_utils import check_remote_accessibility, check_local_remote_configured
-from .utils import GitSyncResult
+from .utils import GitSyncResult, create_git_sync_result
 
 
 def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func, setup_upstream_tracking_func, sync_ops, logger: logging.Logger) -> GitSyncResult:

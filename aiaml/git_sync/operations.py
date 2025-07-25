@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 
 from ..config import Config
 from ..platform import get_platform_info, get_git_executable, validate_git_availability, get_platform_specific_git_config
-from .utils import GitSyncResult
+from .utils import GitSyncResult, create_git_sync_result
 
 
 def execute_git_command_with_retry(

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..platform import get_git_executable, get_platform_info
-from .utils import GitSyncResult
+from .utils import GitSyncResult, create_git_sync_result
 
 
 def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSyncResult:

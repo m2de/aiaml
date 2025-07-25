@@ -13,7 +13,7 @@ from .remote_utils import check_remote_accessibility, detect_remote_default_bran
 from .repository_info import RepositoryState, RepositoryInfo
 from .sync_operations import SyncOperations
 from .upstream_tracking import setup_upstream_tracking as setup_upstream_tracking_func
-from .utils import GitSyncResult
+from .utils import GitSyncResult, create_git_sync_result
 
 
 class RepositoryStateManager:

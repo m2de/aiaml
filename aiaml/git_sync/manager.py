@@ -8,12 +8,13 @@ from typing import Optional, Dict, Any
 
 from ..config import Config
 from ..platform import get_platform_info, get_git_executable
-from .utils import GitSyncResult
+from .utils import GitSyncResult, create_git_sync_result
 from .operations import (
     execute_git_command_with_retry,
     setup_initial_git_config,
     validate_git_configuration
 )
+from .state import RepositoryStateManager
 
 
 class GitSyncManager:
@@ -44,6 +45,9 @@ class GitSyncManager:
         # Git repository directory (the base AIAML directory contains the git repo)
         self.git_repo_dir = config.git_repo_dir  # This is the base AIAML directory
         self.git_dir = self.git_repo_dir / ".git"
+        
+        # Repository state manager for enhanced Git sync
+        self.repo_state_manager = RepositoryStateManager(config, self.git_repo_dir)
         
         # Initialize if Git sync is enabled
         if config.enable_git_sync:
@@ -87,7 +91,7 @@ class GitSyncManager:
             self._initialized = True
             self.logger.info("Git synchronization manager initialized successfully")
             
-            return GitSyncResult(
+            return create_git_sync_result(
                 success=True,
                 message="Git synchronization manager initialized",
                 operation="initialize"
@@ -97,7 +101,7 @@ class GitSyncManager:
             error_msg = f"Failed to initialize Git synchronization manager: {e}"
             self.logger.error(error_msg, exc_info=True)
             
-            return GitSyncResult(
+            return create_git_sync_result(
                 success=False,
                 message=error_msg,
                 operation="initialize",
@@ -133,7 +137,7 @@ class GitSyncManager:
             # Set up initial configuration
             setup_initial_git_config(self.git_repo_dir)
             
-            return GitSyncResult(
+            return create_git_sync_result(
                 success=True,
                 message="Git repository initialized",
                 operation="git_init"
@@ -284,7 +288,7 @@ class GitSyncManager:
             GitSyncResult indicating success or failure
         """
         if not self.config.enable_git_sync:
-            return GitSyncResult(
+            return create_git_sync_result(
                 success=False,
                 message="Git sync is disabled",
                 operation="sync_memory",
@@ -323,10 +327,14 @@ class GitSyncManager:
                 if not commit_result.success:
                     return commit_result
                 
+                # Get repository information and branch name
+                repo_info = self.repo_state_manager.get_repository_info()
+                branch_name = repo_info.default_branch
+                
                 # Step 3: Push to remote if configured
                 if self.config.git_remote_url:
                     push_result = execute_git_command_with_retry(
-                        ["git", "push", "origin", "main"],
+                        ["git", "push", "origin", branch_name],
                         f"push memory {memory_id} to remote",
                         self.git_repo_dir,
                         self.config,
@@ -336,38 +344,54 @@ class GitSyncManager:
                     if not push_result.success:
                         # Log warning but don't fail the entire operation
                         self.logger.warning(f"Failed to push memory {memory_id} to remote: {push_result.message}")
-                        return GitSyncResult(
+                        return create_git_sync_result(
                             success=True,
                             message=f"Memory {memory_id} committed locally (push failed: {push_result.message})",
                             operation="sync_memory",
-                            attempts=push_result.attempts
+                            attempts=push_result.attempts,
+                            repository_info=repo_info,
+                            branch_used=branch_name
                         )
                     
                     self.logger.info(f"Memory {memory_id} synced to Git and pushed to remote successfully")
-                    return GitSyncResult(
+                    return create_git_sync_result(
                         success=True,
                         message=f"Memory {memory_id} synced to Git and pushed to remote",
                         operation="sync_memory",
-                        attempts=max(add_result.attempts, commit_result.attempts, push_result.attempts)
+                        attempts=max(add_result.attempts, commit_result.attempts, push_result.attempts),
+                        repository_info=repo_info,
+                        branch_used=branch_name
                     )
                 else:
                     self.logger.info(f"Memory {memory_id} committed to Git locally (no remote configured)")
-                    return GitSyncResult(
+                    return create_git_sync_result(
                         success=True,
                         message=f"Memory {memory_id} committed to Git locally",
                         operation="sync_memory",
-                        attempts=max(add_result.attempts, commit_result.attempts)
+                        attempts=max(add_result.attempts, commit_result.attempts),
+                        repository_info=repo_info,
+                        branch_used=branch_name
                     )
                 
             except Exception as e:
                 error_msg = f"Unexpected error during Git sync for memory {memory_id}: {e}"
                 self.logger.error(error_msg, exc_info=True)
                 
-                return GitSyncResult(
+                # Try to get repository info for error reporting
+                try:
+                    repo_info = self.repo_state_manager.get_repository_info()
+                    branch_name = repo_info.default_branch
+                except Exception:
+                    repo_info = None
+                    branch_name = None
+                
+                return create_git_sync_result(
                     success=False,
                     message=error_msg,
                     operation="sync_memory",
-                    error_code="GIT_SYNC_UNEXPECTED_ERROR"
+                    error_code="GIT_SYNC_UNEXPECTED_ERROR",
+                    repository_info=repo_info,
+                    branch_used=branch_name
                 )
     
     def sync_memory_background(self, memory_id: str, filename: str) -> None:

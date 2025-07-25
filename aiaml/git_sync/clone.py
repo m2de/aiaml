@@ -8,8 +8,10 @@ from typing import Optional
 
 from ..config import Config
 from ..platform import get_git_executable, get_platform_info, get_platform_specific_git_config
-from .utils import GitSyncResult
+from .utils import GitSyncResult, create_git_sync_result
 from .validation import validate_cloned_repository
+from .repository_info import RepositoryState, RepositoryInfo
+from .branch_utils import get_current_local_branch
 
 
 def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResult:
@@ -129,7 +131,7 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
         if result.returncode != 0:
             error_msg = f"Git clone failed: {result.stderr if result.stderr else result.stdout}"
             logger.error(error_msg)
-            return GitSyncResult(
+            return create_git_sync_result(
                 success=False,
                 message=error_msg,
                 operation="clone_repository",
@@ -175,16 +177,36 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
         
         logger.info(f"Repository clone completed successfully from {config.git_remote_url}")
         
-        return GitSyncResult(
+        # Detect the current branch after cloning
+        current_branch = get_current_local_branch(git_repo_dir)
+        if not current_branch:
+            current_branch = "main"  # Fallback
+        
+        # Create repository info for the cloned repository
+        # After successful cloning, we have a synchronized local repository
+        repo_info = RepositoryInfo(
+            state=RepositoryState.SYNCHRONIZED,
+            local_exists=True,
+            remote_exists=True,
+            remote_url=config.git_remote_url,
+            default_branch=current_branch,
+            local_branch=current_branch,
+            tracking_configured=True,  # Clone sets up tracking automatically
+            needs_sync=False
+        )
+        
+        return create_git_sync_result(
             success=True,
             message=f"Repository cloned successfully from {config.git_remote_url}",
-            operation="clone_repository"
+            operation="clone_repository",
+            repository_info=repo_info,
+            branch_used=current_branch
         )
         
     except subprocess.TimeoutExpired:
         error_msg = "Repository clone operation timed out"
         logger.error(error_msg)
-        return GitSyncResult(
+        return create_git_sync_result(
             success=False,
             message=error_msg,
             operation="clone_repository",
