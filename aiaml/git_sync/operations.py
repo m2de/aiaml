@@ -290,6 +290,95 @@ def validate_git_configuration(git_repo_dir: Path, git_dir: Path, config: Config
         )
 
 
+def detect_remote_default_branch(remote_url: str, config: Config, git_repo_dir: Path) -> str:
+    """
+    Detect the default branch of a remote repository.
+    
+    This function attempts to determine the default branch name by:
+    1. Using `git ls-remote --symref` to get symbolic references
+    2. Parsing the symbolic reference to extract branch name
+    3. Falling back to common branch names (main, master, develop)
+    4. Defaulting to "main" if detection fails
+    
+    Args:
+        remote_url: URL of the remote repository
+        config: Server configuration for retry settings
+        git_repo_dir: Git repository directory for command execution
+        
+    Returns:
+        str: The detected default branch name
+        
+    Requirements: 2.1, 2.2, 2.3
+    """
+    logger = logging.getLogger('aiaml.git_sync')
+    git_executable = get_git_executable()
+    platform_info = get_platform_info()
+    
+    logger.debug(f"Detecting default branch for remote: {remote_url}")
+    
+    # Strategy 1: Use git ls-remote --symref to get symbolic reference
+    try:
+        logger.debug("Attempting to detect default branch using symbolic references")
+        
+        result = subprocess.run(
+            [git_executable, "ls-remote", "--symref", remote_url, "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            shell=platform_info.is_windows
+        )
+        
+        # Parse the output to find the symbolic reference
+        # Expected format: "ref: refs/heads/main\tHEAD"
+        for line in result.stdout.strip().split('\n'):
+            if line.startswith('ref: refs/heads/'):
+                branch_name = line.split('ref: refs/heads/')[1].split('\t')[0].strip()
+                logger.info(f"Detected default branch via symbolic reference: {branch_name}")
+                return branch_name
+                
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to detect default branch via symbolic reference: {e.stderr if e.stderr else str(e)}")
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout while detecting default branch via symbolic reference")
+    except Exception as e:
+        logger.warning(f"Unexpected error detecting default branch via symbolic reference: {e}")
+    
+    # Strategy 2: Try common branch names by checking if they exist on remote
+    common_branches = ["main", "master", "develop"]
+    logger.debug(f"Falling back to checking common branch names: {common_branches}")
+    
+    for branch_name in common_branches:
+        try:
+            logger.debug(f"Checking if branch '{branch_name}' exists on remote")
+            
+            result = subprocess.run(
+                [git_executable, "ls-remote", "--heads", remote_url, branch_name],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                shell=platform_info.is_windows
+            )
+            
+            # If the command succeeds and returns output, the branch exists
+            if result.stdout.strip():
+                logger.info(f"Found existing branch on remote: {branch_name}")
+                return branch_name
+                
+        except subprocess.CalledProcessError as e:
+            logger.debug(f"Branch '{branch_name}' not found on remote: {e.stderr if e.stderr else str(e)}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout while checking branch '{branch_name}' on remote")
+        except Exception as e:
+            logger.debug(f"Error checking branch '{branch_name}' on remote: {e}")
+    
+    # Strategy 3: Default fallback
+    default_branch = "main"
+    logger.warning(f"Could not detect default branch, falling back to: {default_branch}")
+    return default_branch
+
+
 def sync_memory_to_git(memory_id: str, filename: str, config: Config) -> None:
     """
     Convenience function to sync a memory to Git using the global manager.
