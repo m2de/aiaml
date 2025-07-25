@@ -3,7 +3,8 @@
 from .manager import GitSyncManager, get_git_sync_manager
 from .utils import GitSyncResult
 from .operations import sync_memory_to_git
-from .state import RepositoryState, RepositoryInfo, RepositoryStateManager
+from .repository_info import RepositoryState, RepositoryInfo
+from .state import RepositoryStateManager
 
 __all__ = [
     'GitSyncManager',
