@@ -28,10 +28,11 @@ def test_config_module():
             enable_git_sync=False
         )
         
-        if config.memory_dir == Path("test_memory"):
+        # The path gets normalized to absolute, so check if it ends with test_memory
+        if config.memory_dir.name == "test_memory":
             print("  ✓ Config creation works")
         else:
-            print("  ✗ Config creation failed")
+            print(f"  ✗ Config creation failed: expected path ending with 'test_memory', got {config.memory_dir}")
             return False
         
         # Test config validation

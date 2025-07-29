@@ -2,11 +2,11 @@
 
 import logging
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
 
+from git import Repo, GitCommandError
 from ..platform import get_git_executable, get_platform_info
 from .branch_utils import check_remote_branch_exists, check_local_branch_exists, get_current_local_branch, check_upstream_tracking
 from .remote_utils import check_remote_accessibility, check_local_remote_configured
@@ -136,21 +136,24 @@ class SyncOperations:
         try:
             self.logger.info("Attempting to resolve merge conflicts by prioritizing remote content")
             
-            git_executable = get_git_executable()
-            platform_info = get_platform_info()
+            try:
+                repo = Repo(self.git_repo_dir)
+            except Exception as e:
+                error_msg = f"Failed to access Git repository: {e}"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="resolve_merge_conflicts",
+                    error_code="REPO_ACCESS_ERROR"
+                )
             
             # Get list of conflicted files
-            result = subprocess.run(
-                [git_executable, "diff", "--name-only", "--diff-filter=U"],
-                capture_output=True,
-                text=True,
-                cwd=self.git_repo_dir,
-                timeout=30,
-                shell=platform_info.is_windows
-            )
-            
-            if result.returncode != 0:
-                error_msg = f"Failed to get list of conflicted files: {result.stderr if result.stderr else result.stdout}"
+            try:
+                # Get unmerged files (conflicts)
+                conflicted_files = [item.a_path for item in repo.index.unmerged_blobs().keys()]
+            except Exception as e:
+                error_msg = f"Failed to get list of conflicted files: {e}"
                 self.logger.error(error_msg)
                 return GitSyncResult(
                     success=False,
@@ -158,8 +161,6 @@ class SyncOperations:
                     operation="resolve_merge_conflicts",
                     error_code="CONFLICT_LIST_FAILED"
                 )
-            
-            conflicted_files = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
             
             if not conflicted_files:
                 self.logger.info("No conflicted files found")
@@ -175,17 +176,13 @@ class SyncOperations:
             for file_path in conflicted_files:
                 self.logger.debug(f"Resolving conflict in {file_path} by accepting remote version")
                 
-                result = subprocess.run(
-                    [git_executable, "checkout", "--theirs", file_path],
-                    capture_output=True,
-                    text=True,
-                    cwd=self.git_repo_dir,
-                    timeout=30,
-                    shell=platform_info.is_windows
-                )
-                
-                if result.returncode != 0:
-                    error_msg = f"Failed to resolve conflict in {file_path}: {result.stderr if result.stderr else result.stdout}"
+                try:
+                    # Accept the remote version (theirs) for this file
+                    repo.git.checkout('--theirs', file_path)
+                    # Stage the resolved file
+                    repo.index.add([file_path])
+                except GitCommandError as e:
+                    error_msg = f"Failed to resolve conflict in {file_path}: {e}"
                     self.logger.error(error_msg)
                     return GitSyncResult(
                         success=False,
@@ -193,39 +190,31 @@ class SyncOperations:
                         operation="resolve_merge_conflicts",
                         error_code="CONFLICT_RESOLUTION_FAILED"
                     )
-                
-                # Stage the resolved file
-                result = subprocess.run(
-                    [git_executable, "add", file_path],
-                    capture_output=True,
-                    text=True,
-                    cwd=self.git_repo_dir,
-                    timeout=30,
-                    shell=platform_info.is_windows
-                )
-                
-                if result.returncode != 0:
-                    error_msg = f"Failed to stage resolved file {file_path}: {result.stderr if result.stderr else result.stdout}"
+                except Exception as e:
+                    error_msg = f"Unexpected error resolving conflict in {file_path}: {e}"
                     self.logger.error(error_msg)
                     return GitSyncResult(
                         success=False,
                         message=error_msg,
                         operation="resolve_merge_conflicts",
-                        error_code="CONFLICT_STAGING_FAILED"
+                        error_code="CONFLICT_RESOLUTION_FAILED"
                     )
             
             # Complete the merge
-            result = subprocess.run(
-                [git_executable, "commit", "--no-edit"],
-                capture_output=True,
-                text=True,
-                cwd=self.git_repo_dir,
-                timeout=30,
-                shell=platform_info.is_windows
-            )
-            
-            if result.returncode != 0:
-                error_msg = f"Failed to complete merge after conflict resolution: {result.stderr if result.stderr else result.stdout}"
+            try:
+                # Commit the merge with default merge message
+                repo.index.commit("Merge conflicts resolved by accepting remote changes")
+            except GitCommandError as e:
+                error_msg = f"Failed to complete merge after conflict resolution: {e}"
+                self.logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="resolve_merge_conflicts",
+                    error_code="MERGE_COMMIT_FAILED"
+                )
+            except Exception as e:
+                error_msg = f"Unexpected error completing merge: {e}"
                 self.logger.error(error_msg)
                 return GitSyncResult(
                     success=False,
@@ -242,14 +231,14 @@ class SyncOperations:
                 operation="resolve_merge_conflicts"
             )
             
-        except subprocess.TimeoutExpired:
-            error_msg = "Conflict resolution timed out"
+        except GitCommandError as e:
+            error_msg = f"Git command error during conflict resolution: {e}"
             self.logger.error(error_msg)
             return GitSyncResult(
                 success=False,
                 message=error_msg,
                 operation="resolve_merge_conflicts",
-                error_code="CONFLICT_RESOLUTION_TIMEOUT"
+                error_code="GIT_COMMAND_ERROR"
             )
             
         except Exception as e:

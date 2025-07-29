@@ -1,40 +1,35 @@
-"""Branch utilities for Git synchronization."""
+"""Branch utilities for Git synchronization using GitPython."""
 
 import logging
-import subprocess
 from pathlib import Path
 
-from ..platform import get_git_executable, get_platform_info
+try:
+    from git import Repo, GitCommandError
+    HAS_GITPYTHON = True
+except ImportError:
+    HAS_GITPYTHON = False
+    
+    class GitCommandError(Exception):
+        pass
 
 
 def check_remote_branch_exists(git_repo_dir: Path, branch_name: str) -> bool:
-    """Check if a branch exists on the remote repository."""
+    """Check if a branch exists on the remote repository using GitPython."""
     logger = logging.getLogger('aiaml.git_sync.branch_utils')
     
+    if not HAS_GITPYTHON:
+        logger.warning("GitPython not available for remote branch check")
+        return False
+    
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        repo = Repo(git_repo_dir)
         
-        # Fetch latest remote information to ensure we have up-to-date branch list
-        subprocess.run(
-            [git_executable, "fetch", "origin"],
-            capture_output=True,
-            cwd=git_repo_dir,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
+        # Fetch latest remote information
+        repo.remotes.origin.fetch()
         
         # Check if remote branch exists
-        result = subprocess.run(
-            [git_executable, "ls-remote", "--heads", "origin", branch_name],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
-        
-        return result.returncode == 0 and result.stdout.strip()
+        remote_refs = [ref.name for ref in repo.remotes.origin.refs]
+        return f'origin/{branch_name}' in remote_refs
         
     except Exception as e:
         logger.debug(f"Error checking remote branch existence for '{branch_name}': {e}")
@@ -42,23 +37,17 @@ def check_remote_branch_exists(git_repo_dir: Path, branch_name: str) -> bool:
 
 
 def check_local_branch_exists(git_repo_dir: Path, branch_name: str) -> bool:
-    """Check if a branch exists in the local repository."""
+    """Check if a branch exists in the local repository using GitPython."""
     logger = logging.getLogger('aiaml.git_sync.branch_utils')
     
+    if not HAS_GITPYTHON:
+        logger.warning("GitPython not available for local branch check")
+        return False
+    
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
-        result = subprocess.run(
-            [git_executable, "branch", "--list", branch_name],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        return result.returncode == 0 and result.stdout.strip()
+        repo = Repo(git_repo_dir)
+        branch_names = [head.name for head in repo.heads]
+        return branch_name in branch_names
         
     except Exception as e:
         logger.debug(f"Error checking local branch existence for '{branch_name}': {e}")
@@ -66,32 +55,20 @@ def check_local_branch_exists(git_repo_dir: Path, branch_name: str) -> bool:
 
 
 def get_current_local_branch(git_repo_dir: Path) -> str:
-    """Get the current local branch name."""
+    """Get the current local branch name using GitPython."""
     logger = logging.getLogger('aiaml.git_sync.branch_utils')
     git_dir = git_repo_dir / ".git"
     
     if not git_dir.exists():
         return None
     
-    try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
-        result = subprocess.run(
-            [git_executable, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode == 0:
-            branch_name = result.stdout.strip()
-            if branch_name:
-                return branch_name
-        
+    if not HAS_GITPYTHON:
+        logger.warning("GitPython not available for branch detection")
         return None
+    
+    try:
+        repo = Repo(git_repo_dir)
+        return repo.active_branch.name if repo.active_branch else None
         
     except Exception as e:
         logger.debug(f"Error getting current local branch: {e}")
@@ -99,27 +76,23 @@ def get_current_local_branch(git_repo_dir: Path) -> str:
 
 
 def check_upstream_tracking(git_repo_dir: Path, branch_name: str) -> bool:
-    """Check if the specified branch has upstream tracking configured."""
+    """Check if the specified branch has upstream tracking configured using GitPython."""
     logger = logging.getLogger('aiaml.git_sync.branch_utils')
     git_dir = git_repo_dir / ".git"
     
     if not git_dir.exists():
         return False
+
+    if not HAS_GITPYTHON:
+        logger.warning("GitPython not available for upstream tracking check")
+        return False
     
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
-        result = subprocess.run(
-            [git_executable, "config", f"branch.{branch_name}.remote"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        return result.returncode == 0 and result.stdout.strip()
+        repo = Repo(git_repo_dir)
+        for head in repo.heads:
+            if head.name == branch_name:
+                return head.tracking_branch() is not None
+        return False
         
     except Exception as e:
         logger.debug(f"Error checking upstream tracking for {branch_name}: {e}")

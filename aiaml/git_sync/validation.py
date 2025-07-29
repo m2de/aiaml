@@ -1,10 +1,10 @@
 """Repository validation utilities for Git synchronization."""
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional
 
+from git import Repo, InvalidGitRepositoryError, GitCommandError
 from ..platform import get_git_executable, get_platform_info
 from .utils import GitSyncResult, create_git_sync_result
 
@@ -43,21 +43,23 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
                 error_code="MISSING_GIT_DIR"
             )
         
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
         # Validate that it's a proper Git repository
-        result = subprocess.run(
-            [git_executable, "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            error_msg = f"Cloned repository validation failed: not a valid Git repository: {result.stderr}"
+        try:
+            repo = Repo(git_repo_dir)
+            # Check if working directory has any changes
+            if repo.is_dirty():
+                logger.debug("Repository has uncommitted changes")
+        except InvalidGitRepositoryError:
+            error_msg = "Cloned repository validation failed: not a valid Git repository"
+            logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="validate_cloned_repo",
+                error_code="INVALID_GIT_REPO"
+            )
+        except Exception as e:
+            error_msg = f"Cloned repository validation failed: error accessing repository: {e}"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
@@ -67,17 +69,22 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
             )
         
         # Check remote configuration
-        result = subprocess.run(
-            [git_executable, "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            error_msg = "Cloned repository validation failed: origin remote not configured"
+        try:
+            origin_remote = repo.remotes.get('origin')
+            if not origin_remote:
+                error_msg = "Cloned repository validation failed: origin remote not configured"
+                logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="MISSING_ORIGIN_REMOTE"
+                )
+            
+            # Verify remote URL matches configuration
+            actual_remote_url = origin_remote.url
+        except Exception as e:
+            error_msg = f"Cloned repository validation failed: error accessing origin remote: {e}"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
@@ -85,9 +92,6 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
                 operation="validate_cloned_repo",
                 error_code="MISSING_ORIGIN_REMOTE"
             )
-        
-        # Verify remote URL matches configuration
-        actual_remote_url = result.stdout.strip()
         if actual_remote_url != git_remote_url:
             error_msg = f"Cloned repository validation failed: remote URL mismatch (expected: {git_remote_url}, actual: {actual_remote_url})"
             logger.error(error_msg)
@@ -99,17 +103,20 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
             )
         
         # Check if we have a valid branch
-        result = subprocess.run(
-            [git_executable, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0 or not result.stdout.strip():
-            error_msg = "Cloned repository validation failed: no current branch found"
+        try:
+            if repo.head.is_detached:
+                error_msg = "Cloned repository validation failed: HEAD is detached, no current branch"
+                logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_cloned_repo",
+                    error_code="NO_CURRENT_BRANCH"
+                )
+            
+            current_branch = repo.active_branch.name
+        except Exception as e:
+            error_msg = f"Cloned repository validation failed: error getting current branch: {e}"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
@@ -117,8 +124,6 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
                 operation="validate_cloned_repo",
                 error_code="NO_CURRENT_BRANCH"
             )
-        
-        current_branch = result.stdout.strip()
         logger.debug(f"Cloned repository validation successful, current branch: {current_branch}")
         
         return GitSyncResult(
@@ -127,14 +132,14 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
             operation="validate_cloned_repo"
         )
         
-    except subprocess.TimeoutExpired:
-        error_msg = "Cloned repository validation timed out"
+    except GitCommandError as e:
+        error_msg = f"Git command error during validation: {e}"
         logger.error(error_msg)
         return GitSyncResult(
             success=False,
             message=error_msg,
             operation="validate_cloned_repo",
-            error_code="VALIDATION_TIMEOUT"
+            error_code="GIT_COMMAND_ERROR"
         )
         
     except Exception as e:
@@ -169,91 +174,66 @@ def validate_upstream_tracking(git_repo_dir: Path, branch_name: str) -> GitSyncR
     try:
         logger.debug(f"Validating upstream tracking for branch '{branch_name}'")
         
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
-        # Check if remote is configured
-        result = subprocess.run(
-            [git_executable, "config", f"branch.{branch_name}.remote"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0 or not result.stdout.strip():
-            error_msg = f"Upstream tracking validation failed: no remote configured for branch '{branch_name}'"
+        try:
+            repo = Repo(git_repo_dir)
+            
+            # Get the branch object
+            try:
+                branch = repo.heads[branch_name]
+            except IndexError:
+                error_msg = f"Upstream tracking validation failed: branch '{branch_name}' not found"
+                logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_upstream_tracking",
+                    error_code="BRANCH_NOT_FOUND"
+                )
+            
+            # Check if remote tracking is configured
+            if not branch.tracking_branch():
+                error_msg = f"Upstream tracking validation failed: no remote configured for branch '{branch_name}'"
+                logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="validate_upstream_tracking",
+                    error_code="NO_REMOTE_CONFIG"
+                )
+            
+            tracking_branch = branch.tracking_branch()
+            remote_name = tracking_branch.remote_name
+        except Exception as e:
+            error_msg = f"Error accessing repository for upstream validation: {e}"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
                 message=error_msg,
                 operation="validate_upstream_tracking",
-                error_code="NO_REMOTE_CONFIG"
+                error_code="REPO_ACCESS_ERROR"
             )
         
-        remote_name = result.stdout.strip()
-        
-        # Check if merge configuration is set
-        result = subprocess.run(
-            [git_executable, "config", f"branch.{branch_name}.merge"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0 or not result.stdout.strip():
-            error_msg = f"Upstream tracking validation failed: no merge configuration for branch '{branch_name}'"
+        # Validate the tracking branch name matches expected pattern
+        expected_tracking_branch = f"origin/{branch_name}"
+        if tracking_branch.name != expected_tracking_branch:
+            error_msg = f"Upstream tracking validation failed: unexpected tracking branch (expected: {expected_tracking_branch}, actual: {tracking_branch.name})"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
                 message=error_msg,
                 operation="validate_upstream_tracking",
-                error_code="NO_MERGE_CONFIG"
+                error_code="INVALID_TRACKING_BRANCH"
             )
         
-        merge_ref = result.stdout.strip()
+        # Verify the tracking branch exists and is accessible
+        try:
+            # This will raise an exception if the tracking branch doesn't exist
+            tracking_commit = tracking_branch.commit
+            logger.debug(f"Tracking branch {tracking_branch.name} points to commit {tracking_commit.hexsha[:8]}")
+        except Exception as e:
+            logger.warning(f"Upstream tracking validation: could not access tracking branch commit: {e}")
         
-        # Validate that the remote branch reference is correct
-        expected_merge_ref = f"refs/heads/{branch_name}"
-        if merge_ref != expected_merge_ref:
-            error_msg = f"Upstream tracking validation failed: unexpected merge reference (expected: {expected_merge_ref}, actual: {merge_ref})"
-            logger.error(error_msg)
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="validate_upstream_tracking",
-                error_code="INVALID_MERGE_REF"
-            )
-        
-        # Test that git status can determine tracking status
-        result = subprocess.run(
-            [git_executable, "status", "-b", "--porcelain"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            error_msg = f"Upstream tracking validation failed: cannot determine tracking status for branch '{branch_name}'"
-            logger.error(error_msg)
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="validate_upstream_tracking",
-                error_code="TRACKING_STATUS_FAILED"
-            )
-        
-        # Check if the status output includes tracking information
-        status_output = result.stdout.strip()
-        if status_output and not f"origin/{branch_name}" in status_output:
-            logger.warning(f"Upstream tracking validation: tracking information not found in status output for branch '{branch_name}'")
-        
-        logger.debug(f"Upstream tracking validation successful for branch '{branch_name}' (remote: {remote_name}, merge: {merge_ref})")
+        logger.debug(f"Upstream tracking validation successful for branch '{branch_name}' (remote: {remote_name}, tracking: {tracking_branch.name})")
         
         return GitSyncResult(
             success=True,
@@ -261,14 +241,14 @@ def validate_upstream_tracking(git_repo_dir: Path, branch_name: str) -> GitSyncR
             operation="validate_upstream_tracking"
         )
         
-    except subprocess.TimeoutExpired:
-        error_msg = f"Upstream tracking validation timed out for branch '{branch_name}'"
+    except GitCommandError as e:
+        error_msg = f"Git command error during upstream tracking validation for branch '{branch_name}': {e}"
         logger.error(error_msg)
         return GitSyncResult(
             success=False,
             message=error_msg,
             operation="validate_upstream_tracking",
-            error_code="VALIDATION_TIMEOUT"
+            error_code="GIT_COMMAND_ERROR"
         )
         
     except Exception as e:

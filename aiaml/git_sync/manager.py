@@ -1,12 +1,21 @@
 """Simplified Git synchronization manager for AIAML."""
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+try:
+    import git
+    from git import Repo, InvalidGitRepositoryError
+    HAS_GITPYTHON = True
+except ImportError:
+    HAS_GITPYTHON = False
+    
+    class InvalidGitRepositoryError(Exception):
+        pass
+
 from ..config import Config
-from ..platform import get_platform_info, get_git_executable
+from ..platform import get_platform_info
 from .utils import GitSyncResult, create_git_sync_result
 from .manager_core import GitSyncManagerCore
 from .manager_sync import GitSyncManagerSync
@@ -87,23 +96,25 @@ class GitSyncManager:
             return status
         
         try:
-            # Check remote configuration
-            if self.git_dir.exists():
-                git_executable = get_git_executable()
-                platform_info = get_platform_info()
-                
-                result = subprocess.run(
-                    [git_executable, "remote", "get-url", "origin"],
-                    capture_output=True,
-                    text=True,
-                    cwd=self.git_repo_dir,
-                    timeout=5,
-                    shell=platform_info.is_windows
-                )
-                
-                if result.returncode == 0:
-                    status['remote_configured'] = True
-                    status['actual_remote_url'] = result.stdout.strip()
+            # Check remote configuration using GitPython
+            if self.git_dir.exists() and HAS_GITPYTHON:
+                try:
+                    repo = Repo(self.git_repo_dir)
+                    origin_remote = repo.remote('origin')
+                    remote_urls = list(origin_remote.urls)
+                    
+                    if remote_urls:
+                        status['remote_configured'] = True
+                        status['actual_remote_url'] = remote_urls[0]
+                    
+                except git.exc.GitCommandError:
+                    # Remote 'origin' doesn't exist
+                    status['remote_configured'] = False
+                except InvalidGitRepositoryError:
+                    # Not a valid git repository
+                    status['remote_configured'] = False
+            elif not HAS_GITPYTHON:
+                status['last_error'] = "GitPython not available"
             
         except Exception as e:
             status['last_error'] = str(e)
