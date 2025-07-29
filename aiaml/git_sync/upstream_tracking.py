@@ -1,9 +1,9 @@
 """Upstream tracking operations for Git repositories."""
 
 import logging
-import subprocess
 from pathlib import Path
 
+from git import Repo, GitCommandError
 from ..config import Config
 from ..platform import get_git_executable, get_platform_info
 from .branch_utils import check_remote_branch_exists, check_local_branch_exists, get_current_local_branch, check_upstream_tracking
@@ -72,8 +72,17 @@ def setup_upstream_tracking(config: Config, git_repo_dir: Path, branch_name: str
                 error_code="NO_LOCAL_REMOTE"
             )
         
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        try:
+            repo = Repo(git_repo_dir)
+        except Exception as e:
+            error_msg = f"Failed to access Git repository: {e}"
+            logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="setup_upstream_tracking",
+                error_code="REPO_ACCESS_ERROR"
+            )
         
         # Check if the remote branch exists
         remote_branch_exists = check_remote_branch_exists(git_repo_dir, branch_name)
@@ -94,37 +103,31 @@ def setup_upstream_tracking(config: Config, git_repo_dir: Path, branch_name: str
             # Create local branch from remote
             logger.debug(f"Creating local branch '{branch_name}' from remote")
             
-            result = subprocess.run(
-                [git_executable, "checkout", "-b", branch_name, f"origin/{branch_name}"],
-                capture_output=True,
-                text=True,
-                cwd=git_repo_dir,
-                timeout=30,
-                shell=platform_info.is_windows
-            )
-            
-            if result.returncode != 0:
-                error_msg = f"Failed to create local branch '{branch_name}': {result.stderr if result.stderr else result.stdout}"
+            try:
+                origin = repo.remotes.origin
+                remote_branch = origin.refs[branch_name]
+                new_branch = repo.create_head(branch_name, remote_branch)
+                new_branch.set_tracking_branch(remote_branch)
+                new_branch.checkout()
+                
+                logger.info(f"Created local branch '{branch_name}' from remote")
+                
+                # Verify tracking was set up
+                if new_branch.tracking_branch():
+                    logger.info(f"Upstream tracking automatically configured for branch '{branch_name}'")
+                    return GitSyncResult(
+                        success=True,
+                        message=f"Successfully created branch '{branch_name}' with upstream tracking",
+                        operation="setup_upstream_tracking"
+                    )
+            except Exception as e:
+                error_msg = f"Failed to create local branch '{branch_name}': {e}"
                 logger.error(error_msg)
                 return GitSyncResult(
                     success=False,
                     message=error_msg,
                     operation="setup_upstream_tracking",
                     error_code="BRANCH_CREATION_FAILED"
-                )
-            
-            logger.info(f"Created local branch '{branch_name}' from remote")
-            
-            # When creating a branch with checkout -b from origin/branch, 
-            # upstream tracking is automatically set up, but let's verify
-            tracking_configured = check_upstream_tracking(git_repo_dir, branch_name)
-            if tracking_configured:
-                logger.info(f"Upstream tracking automatically configured for branch '{branch_name}'")
-                
-                return GitSyncResult(
-                    success=True,
-                    message=f"Successfully created branch '{branch_name}' with upstream tracking",
-                    operation="setup_upstream_tracking"
                 )
         else:
             # Local branch exists, check if tracking is already configured
@@ -141,17 +144,10 @@ def setup_upstream_tracking(config: Config, git_repo_dir: Path, branch_name: str
             if current_branch != branch_name:
                 logger.debug(f"Switching to branch '{branch_name}'")
                 
-                result = subprocess.run(
-                    [git_executable, "checkout", branch_name],
-                    capture_output=True,
-                    text=True,
-                    cwd=git_repo_dir,
-                    timeout=30,
-                    shell=platform_info.is_windows
-                )
-                
-                if result.returncode != 0:
-                    error_msg = f"Failed to switch to branch '{branch_name}': {result.stderr if result.stderr else result.stdout}"
+                try:
+                    repo.heads[branch_name].checkout()
+                except Exception as e:
+                    error_msg = f"Failed to switch to branch '{branch_name}': {e}"
                     logger.error(error_msg)
                     return GitSyncResult(
                         success=False,
@@ -163,17 +159,12 @@ def setup_upstream_tracking(config: Config, git_repo_dir: Path, branch_name: str
         # Set up upstream tracking manually
         logger.debug(f"Setting up upstream tracking for branch '{branch_name}'")
         
-        result = subprocess.run(
-            [git_executable, "branch", "--set-upstream-to", f"origin/{branch_name}", branch_name],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            error_msg = f"Failed to set upstream tracking for branch '{branch_name}': {result.stderr if result.stderr else result.stdout}"
+        try:
+            local_branch = repo.heads[branch_name]
+            remote_branch = repo.remotes.origin.refs[branch_name]
+            local_branch.set_tracking_branch(remote_branch)
+        except Exception as e:
+            error_msg = f"Failed to set upstream tracking for branch '{branch_name}': {e}"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
@@ -195,14 +186,14 @@ def setup_upstream_tracking(config: Config, git_repo_dir: Path, branch_name: str
             operation="setup_upstream_tracking"
         )
         
-    except subprocess.TimeoutExpired:
-        error_msg = f"Upstream tracking setup timed out for branch '{branch_name}'"
+    except GitCommandError as e:
+        error_msg = f"Git command error during upstream tracking setup for branch '{branch_name}': {e}"
         logger.error(error_msg)
         return GitSyncResult(
             success=False,
             message=error_msg,
             operation="setup_upstream_tracking",
-            error_code="UPSTREAM_SETUP_TIMEOUT"
+            error_code="GIT_COMMAND_ERROR"
         )
         
     except Exception as e:

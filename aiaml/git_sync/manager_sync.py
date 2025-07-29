@@ -4,9 +4,16 @@ import logging
 import threading
 from typing import Optional
 
+try:
+    import git
+    from git import Repo
+    HAS_GITPYTHON = True
+except ImportError:
+    HAS_GITPYTHON = False
+
 from ..config import Config
 from .utils import GitSyncResult, create_git_sync_result
-from .operations import execute_git_command_with_retry
+from .operations import execute_git_operation_with_retry
 from .manager_core import GitSyncManagerCore
 
 
@@ -69,8 +76,13 @@ class GitSyncManagerSync:
                     
                     # Step 1: Add the file to Git
                     with self.core._safe_performance_operation("git_add"):
-                        add_result = execute_git_command_with_retry(
-                            ["git", "add", f"files/{filename}"],
+                        def add_operation():
+                            repo = Repo(self.core.git_repo_dir)
+                            repo.index.add([f"files/{filename}"])
+                            return "added"
+                        
+                        add_result = execute_git_operation_with_retry(
+                            add_operation,
                             f"add memory file {filename}",
                             self.core.git_repo_dir,
                             self.config
@@ -85,8 +97,13 @@ class GitSyncManagerSync:
                     # Step 2: Commit the changes
                     commit_message = f"Add memory {memory_id}"
                     with self.core._safe_performance_operation("git_commit"):
-                        commit_result = execute_git_command_with_retry(
-                            ["git", "commit", "-m", commit_message],
+                        def commit_operation():
+                            repo = Repo(self.core.git_repo_dir)
+                            repo.index.commit(commit_message)
+                            return "committed"
+                        
+                        commit_result = execute_git_operation_with_retry(
+                            commit_operation,
                             f"commit memory {memory_id}",
                             self.core.git_repo_dir,
                             self.config
@@ -111,12 +128,17 @@ class GitSyncManagerSync:
                             "remote_url": self.config.git_remote_url,
                             "branch": branch_name
                         }):
-                            push_result = execute_git_command_with_retry(
-                                ["git", "push", "origin", branch_name],
+                            def push_operation():
+                                repo = Repo(self.core.git_repo_dir)
+                                origin = repo.remote('origin')
+                                origin.push(branch_name)
+                                return "pushed"
+                            
+                            push_result = execute_git_operation_with_retry(
+                                push_operation,
                                 f"push memory {memory_id} to remote",
                                 self.core.git_repo_dir,
-                                self.config,
-                                timeout=60  # Longer timeout for network operations
+                                self.config
                             )
                             
                             if push_result.attempts > 1:

@@ -1,7 +1,6 @@
 """Repository state management for enhanced Git synchronization."""
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional
 

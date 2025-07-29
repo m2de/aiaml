@@ -1,9 +1,9 @@
 """Repository synchronization operations for Git repositories."""
 
 import logging
-import subprocess
 from pathlib import Path
 
+from git import Repo, GitCommandError
 from ..platform import get_git_executable, get_platform_info
 from .branch_utils import check_remote_branch_exists, check_local_branch_exists, get_current_local_branch, check_upstream_tracking
 from .remote_utils import check_remote_accessibility, check_local_remote_configured
@@ -83,8 +83,17 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
                 error_code="REMOTE_NOT_ACCESSIBLE"
             )
         
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        try:
+            repo = Repo(git_repo_dir)
+        except Exception as e:
+            error_msg = f"Failed to access Git repository: {e}"
+            logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="synchronize_with_remote",
+                error_code="REPO_ACCESS_ERROR"
+            )
         
         # Get the default branch to synchronize with
         default_branch = get_default_branch_func()
@@ -94,57 +103,38 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
         if current_branch != default_branch:
             logger.debug(f"Switching to default branch: {default_branch}")
             
-            # Check if the local branch exists
-            if not check_local_branch_exists(git_repo_dir, default_branch):
-                # Create the branch from remote if it doesn't exist locally
-                if check_remote_branch_exists(git_repo_dir, default_branch):
-                    result = subprocess.run(
-                        [git_executable, "checkout", "-b", default_branch, f"origin/{default_branch}"],
-                        capture_output=True,
-                        text=True,
-                        cwd=git_repo_dir,
-                        timeout=30,
-                        shell=platform_info.is_windows
-                    )
-                    
-                    if result.returncode != 0:
-                        error_msg = f"Failed to create and switch to branch '{default_branch}': {result.stderr if result.stderr else result.stdout}"
+            try:
+                # Check if the local branch exists
+                if not check_local_branch_exists(git_repo_dir, default_branch):
+                    # Create the branch from remote if it doesn't exist locally
+                    if check_remote_branch_exists(git_repo_dir, default_branch):
+                        # Create and checkout the branch from remote
+                        origin = repo.remotes.origin
+                        remote_branch = origin.refs[default_branch]
+                        new_branch = repo.create_head(default_branch, remote_branch)
+                        new_branch.set_tracking_branch(remote_branch)
+                        new_branch.checkout()
+                    else:
+                        error_msg = f"Default branch '{default_branch}' does not exist on remote"
                         logger.error(error_msg)
                         return GitSyncResult(
                             success=False,
                             message=error_msg,
                             operation="synchronize_with_remote",
-                            error_code="BRANCH_CREATION_FAILED"
+                            error_code="REMOTE_BRANCH_NOT_FOUND"
                         )
                 else:
-                    error_msg = f"Default branch '{default_branch}' does not exist on remote"
-                    logger.error(error_msg)
-                    return GitSyncResult(
-                        success=False,
-                        message=error_msg,
-                        operation="synchronize_with_remote",
-                        error_code="REMOTE_BRANCH_NOT_FOUND"
-                    )
-            else:
-                # Switch to existing local branch
-                result = subprocess.run(
-                    [git_executable, "checkout", default_branch],
-                    capture_output=True,
-                    text=True,
-                    cwd=git_repo_dir,
-                    timeout=30,
-                    shell=platform_info.is_windows
+                    # Switch to existing local branch
+                    repo.heads[default_branch].checkout()
+            except Exception as e:
+                error_msg = f"Failed to switch to branch '{default_branch}': {e}"
+                logger.error(error_msg)
+                return GitSyncResult(
+                    success=False,
+                    message=error_msg,
+                    operation="synchronize_with_remote",
+                    error_code="BRANCH_CHECKOUT_FAILED"
                 )
-                
-                if result.returncode != 0:
-                    error_msg = f"Failed to switch to branch '{default_branch}': {result.stderr if result.stderr else result.stdout}"
-                    logger.error(error_msg)
-                    return GitSyncResult(
-                        success=False,
-                        message=error_msg,
-                        operation="synchronize_with_remote",
-                        error_code="BRANCH_CHECKOUT_FAILED"
-                    )
         
         # Ensure upstream tracking is configured
         if not check_upstream_tracking(git_repo_dir, default_branch):
@@ -156,17 +146,21 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
         # Step 1: Fetch latest changes from remote
         logger.debug("Fetching latest changes from remote")
         
-        result = subprocess.run(
-            [git_executable, "fetch", "origin"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=60,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            error_msg = f"Failed to fetch from remote: {result.stderr if result.stderr else result.stdout}"
+        try:
+            origin = repo.remotes.origin
+            origin.fetch()
+            logger.debug("Successfully fetched changes from remote")
+        except GitCommandError as e:
+            error_msg = f"Failed to fetch from remote: {e}"
+            logger.error(error_msg)
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="synchronize_with_remote",
+                error_code="FETCH_FAILED"
+            )
+        except Exception as e:
+            error_msg = f"Unexpected error during fetch: {e}"
             logger.error(error_msg)
             return GitSyncResult(
                 success=False,
@@ -175,21 +169,14 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
                 error_code="FETCH_FAILED"
             )
         
-        logger.debug("Successfully fetched changes from remote")
-        
         # Step 2: Check if there are changes to pull
-        result = subprocess.run(
-            [git_executable, "rev-list", "--count", f"HEAD..origin/{default_branch}"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode == 0:
-            behind_count = int(result.stdout.strip())
-            if behind_count == 0:
+        try:
+            current_commit = repo.head.commit
+            remote_branch = repo.remotes.origin.refs[default_branch]
+            remote_commit = remote_branch.commit
+            
+            # Check if we're behind the remote
+            if current_commit == remote_commit:
                 logger.info("Repository is already up to date with remote")
                 
                 # Still validate existing memory files
@@ -203,7 +190,12 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
                     operation="synchronize_with_remote"
                 )
             else:
+                # Count commits behind (for logging purposes)
+                behind_commits = list(repo.iter_commits(f'HEAD..origin/{default_branch}'))
+                behind_count = len(behind_commits)
                 logger.info(f"Repository is {behind_count} commits behind remote, pulling changes")
+        except Exception as e:
+            logger.warning(f"Could not determine sync status, proceeding with pull: {e}")
         
         # Step 3: Create backup of current state before pulling
         sync_ops.create_sync_backup()
@@ -211,19 +203,14 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
         # Step 4: Pull changes with conflict resolution strategy
         logger.debug(f"Pulling changes from origin/{default_branch}")
         
-        # Use merge strategy that prioritizes remote content for conflicts
-        result = subprocess.run(
-            [git_executable, "pull", "--strategy=recursive", "--strategy-option=theirs", "origin", default_branch],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=120,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
+        try:
+            # Use GitPython's pull method with merge strategy
+            origin = repo.remotes.origin
+            origin.pull(default_branch, strategy_option='theirs')
+            logger.info("Successfully pulled changes from remote")
+        except GitCommandError as e:
             # Check if it's a merge conflict that needs manual resolution
-            if "CONFLICT" in result.stdout or "CONFLICT" in result.stderr:
+            if "CONFLICT" in str(e):
                 logger.warning("Merge conflicts detected, attempting automatic resolution")
                 
                 # Try to resolve conflicts by accepting remote changes
@@ -231,7 +218,7 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
                 if not conflict_resolution_result.success:
                     return conflict_resolution_result
             else:
-                error_msg = f"Failed to pull changes from remote: {result.stderr if result.stderr else result.stdout}"
+                error_msg = f"Failed to pull changes from remote: {e}"
                 logger.error(error_msg)
                 
                 # Attempt to restore from backup
@@ -243,8 +230,19 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
                     operation="synchronize_with_remote",
                     error_code="PULL_FAILED"
                 )
-        
-        logger.info("Successfully pulled changes from remote")
+        except Exception as e:
+            error_msg = f"Unexpected error during pull: {e}"
+            logger.error(error_msg)
+            
+            # Attempt to restore from backup
+            sync_ops.restore_from_sync_backup()
+            
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="synchronize_with_remote",
+                error_code="PULL_FAILED"
+            )
         
         # Step 5: Validate existing memory files after synchronization
         validation_result = sync_ops.validate_existing_memory_files()
@@ -263,8 +261,8 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
             operation="synchronize_with_remote"
         )
         
-    except subprocess.TimeoutExpired:
-        error_msg = "Repository synchronization timed out"
+    except GitCommandError as e:
+        error_msg = f"Git command error during synchronization: {e}"
         logger.error(error_msg)
         
         # Attempt to restore from backup
@@ -274,7 +272,7 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
             success=False,
             message=error_msg,
             operation="synchronize_with_remote",
-            error_code="SYNC_TIMEOUT"
+            error_code="GIT_COMMAND_ERROR"
         )
         
     except Exception as e:

@@ -1,10 +1,10 @@
 """Simplified enhanced error handling and recovery for Git synchronization operations."""
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Dict, Optional, Any, Callable
 
+from git import Repo, GitCommandError
 from ..config import Config
 from ..platform import get_git_executable, get_platform_info
 from .utils import GitSyncResult, create_git_sync_result
@@ -240,8 +240,6 @@ class EnhancedErrorHandler:
             GitSyncResult indicating repository health
         """
         try:
-            git_executable = get_git_executable()
-            platform_info = get_platform_info()
             git_dir = self.git_repo_dir / ".git"
             
             if not git_dir.exists():
@@ -252,37 +250,33 @@ class EnhancedErrorHandler:
                     error_code="NO_REPOSITORY"
                 )
             
-            # Check Git repository integrity
-            result = subprocess.run(
-                [git_executable, "fsck", "--quiet"],
-                capture_output=True,
-                text=True,
-                cwd=self.git_repo_dir,
-                timeout=30,
-                shell=platform_info.is_windows
-            )
-            
-            if result.returncode == 0:
+            # Check Git repository integrity using GitPython
+            try:
+                repo = Repo(self.git_repo_dir)
+                # Try to access the repository and perform basic operations
+                # This will raise exceptions if the repository is corrupted
+                repo.git.fsck('--quiet')
+                
                 return create_git_sync_result(
                     success=True,
                     message="Repository integrity check passed",
                     operation="integrity_check"
                 )
-            else:
+            except GitCommandError as e:
                 return create_git_sync_result(
                     success=False,
-                    message=f"Repository integrity issues detected: {result.stderr}",
+                    message=f"Repository integrity issues detected: {e}",
+                    operation="integrity_check",
+                    error_code="INTEGRITY_FAILED"
+                )
+            except Exception as e:
+                return create_git_sync_result(
+                    success=False,
+                    message=f"Repository access failed: {e}",
                     operation="integrity_check",
                     error_code="INTEGRITY_FAILED"
                 )
                 
-        except subprocess.TimeoutExpired:
-            return create_git_sync_result(
-                success=False,
-                message="Repository integrity check timed out",
-                operation="integrity_check",
-                error_code="INTEGRITY_TIMEOUT"
-            )
         except Exception as e:
             return create_git_sync_result(
                 success=False,
@@ -302,20 +296,10 @@ class EnhancedErrorHandler:
             self.logger.warning("Attempting to recover from repository corruption")
             
             # First, try to repair the repository
-            git_executable = get_git_executable()
-            platform_info = get_platform_info()
-            
-            # Try git gc to clean up
             try:
-                subprocess.run(
-                    [git_executable, "gc", "--prune=now"],
-                    capture_output=True,
-                    text=True,
-                    cwd=self.git_repo_dir,
-                    timeout=60,
-                    shell=platform_info.is_windows,
-                    check=True
-                )
+                repo = Repo(self.git_repo_dir)
+                # Try git gc to clean up
+                repo.git.gc('--prune=now')
                 
                 # Check if repair worked
                 integrity_result = self.validate_repository_integrity()
@@ -325,7 +309,7 @@ class EnhancedErrorHandler:
                         message="Repository corruption repaired successfully",
                         operation="corruption_recovery"
                     )
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            except (GitCommandError, Exception):
                 pass  # Continue to reinitialize
             
             # If repair didn't work, reinitialize the repository
@@ -337,22 +321,21 @@ class EnhancedErrorHandler:
             if git_dir.exists():
                 shutil.rmtree(git_dir)
             
-            # Reinitialize repository
-            subprocess.run(
-                [git_executable, "init"],
-                capture_output=True,
-                text=True,
-                cwd=self.git_repo_dir,
-                timeout=30,
-                shell=platform_info.is_windows,
-                check=True
-            )
-            
-            return create_git_sync_result(
-                success=True,
-                message="Repository reinitialized after corruption",
-                operation="corruption_recovery"
-            )
+            # Reinitialize repository using GitPython
+            try:
+                new_repo = Repo.init(self.git_repo_dir)
+                return create_git_sync_result(
+                    success=True,
+                    message="Repository reinitialized after corruption",
+                    operation="corruption_recovery"
+                )
+            except Exception as e:
+                return create_git_sync_result(
+                    success=False,
+                    message=f"Failed to reinitialize repository: {e}",
+                    operation="corruption_recovery",
+                    error_code="REINIT_FAILED"
+                )
             
         except Exception as e:
             return create_git_sync_result(

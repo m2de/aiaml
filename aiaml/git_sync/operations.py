@@ -1,60 +1,69 @@
-"""Git command operations and execution logic."""
+"""Git command operations and execution logic using GitPython."""
 
 import logging
-import subprocess
 import time
 from pathlib import Path
 from typing import List, Dict, Any
 
+try:
+    import git
+    from git import Repo, GitCommandError, InvalidGitRepositoryError
+    HAS_GITPYTHON = True
+except ImportError:
+    # Fallback when GitPython is not available
+    HAS_GITPYTHON = False
+    
+    class GitCommandError(Exception):
+        pass
+    
+    class InvalidGitRepositoryError(Exception):
+        pass
+
 from ..config import Config
-from ..platform import get_platform_info, get_git_executable, validate_git_availability, get_platform_specific_git_config
+from ..platform import get_platform_info, validate_git_availability, get_platform_specific_git_config
 from .utils import GitSyncResult, create_git_sync_result
 
 
-def execute_git_command_with_retry(
-    command: List[str], 
+def execute_git_operation_with_retry(
+    operation_func,
     operation: str, 
     git_repo_dir: Path,
-    config: Config,
-    timeout: int = 30
+    config: Config
 ) -> GitSyncResult:
     """
-    Execute a Git command with retry logic and exponential backoff.
+    Execute a GitPython operation with retry logic and exponential backoff.
     
     Args:
-        command: Git command to execute
+        operation_func: Function that executes the GitPython operation
         operation: Description of the operation for logging
         git_repo_dir: Git repository directory
         config: Server configuration
-        timeout: Command timeout in seconds
         
     Returns:
         GitSyncResult indicating success or failure
     """
     logger = logging.getLogger('aiaml.git_sync')
+    
+    if not HAS_GITPYTHON:
+        return GitSyncResult(
+            success=False,
+            message=f"{operation} failed: GitPython not available. Please install with: pip install GitPython",
+            operation=operation,
+            attempts=1,
+            error_code="GITPYTHON_NOT_AVAILABLE"
+        )
+    
     max_attempts = config.git_retry_attempts
     base_delay = config.git_retry_delay
     
-    # Use platform-specific Git executable
-    git_executable = get_git_executable()
-    if command[0] == "git":
-        command[0] = git_executable
-    
     for attempt in range(1, max_attempts + 1):
         try:
-            logger.debug(f"Executing Git command (attempt {attempt}/{max_attempts}): {' '.join(command)}")
+            logger.debug(f"Executing Git operation (attempt {attempt}/{max_attempts}): {operation}")
             
-            result = subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                cwd=git_repo_dir,
-                timeout=timeout,
-                shell=get_platform_info().is_windows  # Use shell on Windows for better compatibility
-            )
+            # Execute the GitPython operation
+            result = operation_func()
             
-            logger.debug(f"Git command succeeded on attempt {attempt}")
+            logger.debug(f"Git operation succeeded on attempt {attempt}")
             
             return GitSyncResult(
                 success=True,
@@ -63,7 +72,7 @@ def execute_git_command_with_retry(
                 attempts=attempt
             )
             
-        except subprocess.CalledProcessError as e:
+        except GitCommandError as e:
             error_msg = f"{operation} failed (attempt {attempt}/{max_attempts}): {e.stderr if e.stderr else str(e)}"
             
             if attempt == max_attempts:
@@ -82,8 +91,8 @@ def execute_git_command_with_retry(
                 logger.warning(f"{error_msg}, retrying in {delay:.1f}s")
                 time.sleep(delay)
         
-        except subprocess.TimeoutExpired:
-            error_msg = f"{operation} timed out (attempt {attempt}/{max_attempts})"
+        except InvalidGitRepositoryError as e:
+            error_msg = f"{operation} failed - invalid repository (attempt {attempt}/{max_attempts}): {e}"
             
             if attempt == max_attempts:
                 logger.error(error_msg)
@@ -92,7 +101,7 @@ def execute_git_command_with_retry(
                     message=error_msg,
                     operation=operation,
                     attempts=attempt,
-                    error_code="GIT_COMMAND_TIMEOUT"
+                    error_code="INVALID_GIT_REPOSITORY"
                 )
             else:
                 delay = base_delay * (2 ** (attempt - 1))
@@ -127,89 +136,79 @@ def execute_git_command_with_retry(
 
 
 def setup_initial_git_config(git_repo_dir: Path) -> None:
-    """Set up initial Git configuration for the repository with cross-platform support."""
+    """Set up initial Git configuration for the repository using GitPython."""
     logger = logging.getLogger('aiaml.git_sync')
     
+    if not HAS_GITPYTHON:
+        logger.warning("GitPython not available, skipping git configuration setup")
+        return
+    
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        repo = Repo(git_repo_dir)
         platform_git_config = get_platform_specific_git_config()
         
         # Apply platform-specific Git configuration
         for config_key, config_value in platform_git_config.items():
             try:
-                subprocess.run(
-                    [git_executable, "config", config_key, config_value],
-                    check=True,
-                    capture_output=True,
-                    cwd=git_repo_dir,
-                    timeout=10,
-                    shell=platform_info.is_windows
-                )
+                repo.config_writer().set_value("core", config_key.split('.')[-1], config_value)
                 logger.debug(f"Set Git config {config_key} = {config_value}")
-            except subprocess.CalledProcessError as e:
+            except Exception as e:
                 logger.warning(f"Failed to set Git config {config_key}: {e}")
         
         # Set user name and email if not already configured
         try:
-            subprocess.run(
-                [git_executable, "config", "user.name"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
-        except subprocess.CalledProcessError:
-            # User name not configured, set a default
-            subprocess.run(
-                [git_executable, "config", "user.name", "AIAML Memory System"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
+            with repo.config_reader() as config_reader:
+                user_name = config_reader.get_value("user", "name", fallback=None)
+                if not user_name:
+                    repo.config_writer().set_value("user", "name", "AIAML Memory System")
+                    logger.debug("Set default Git user name")
+        except Exception as e:
+            # Set default user name if config reading fails
+            try:
+                repo.config_writer().set_value("user", "name", "AIAML Memory System")
+                logger.debug("Set default Git user name (fallback)")
+            except Exception as config_e:
+                logger.warning(f"Failed to set Git user name: {config_e}")
         
         try:
-            subprocess.run(
-                [git_executable, "config", "user.email"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
-        except subprocess.CalledProcessError:
-            # User email not configured, set a default
-            subprocess.run(
-                [git_executable, "config", "user.email", "aiaml@localhost"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
+            with repo.config_reader() as config_reader:
+                user_email = config_reader.get_value("user", "email", fallback=None)
+                if not user_email:
+                    repo.config_writer().set_value("user", "email", "aiaml@localhost")
+                    logger.debug("Set default Git user email")
+        except Exception as e:
+            # Set default user email if config reading fails
+            try:
+                repo.config_writer().set_value("user", "email", "aiaml@localhost")
+                logger.debug("Set default Git user email (fallback)")
+            except Exception as config_e:
+                logger.warning(f"Failed to set Git user email: {config_e}")
         
-        logger.debug("Cross-platform Git configuration completed")
+        logger.debug("Git configuration completed using GitPython")
         
     except Exception as e:
-        logger.warning(f"Failed to set up cross-platform Git configuration: {e}")
+        logger.warning(f"Failed to set up Git configuration: {e}")
 
 
 def validate_git_configuration(git_repo_dir: Path, git_dir: Path, config: Config) -> GitSyncResult:
     """
-    Validate Git repository configuration with cross-platform support.
+    Validate Git repository configuration using GitPython.
     
     Returns:
         GitSyncResult indicating validation success or failure
     """
     logger = logging.getLogger('aiaml.git_sync')
     
+    if not HAS_GITPYTHON:
+        return GitSyncResult(
+            success=False,
+            message="Git configuration validation failed: GitPython not available. Please install with: pip install GitPython",
+            operation="validate_config",
+            error_code="GITPYTHON_NOT_AVAILABLE"
+        )
+    
     try:
         validation_errors = []
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
         
         # Check if Git is available using cross-platform validation
         git_available, git_error = validate_git_availability()
@@ -219,49 +218,56 @@ def validate_git_configuration(git_repo_dir: Path, git_dir: Path, config: Config
         # Check if repository is properly initialized
         if not git_dir.exists():
             validation_errors.append("Git repository not initialized")
-        
-        # Check Git configuration
-        try:
-            subprocess.run(
-                [git_executable, "config", "user.name"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=5,
-                shell=platform_info.is_windows
+            
+        if validation_errors:
+            # Return early if basic checks fail
+            error_msg = f"Git configuration validation failed: {'; '.join(validation_errors)}"
+            return GitSyncResult(
+                success=False,
+                message=error_msg,
+                operation="validate_config",
+                error_code="GIT_CONFIG_VALIDATION_FAILED"
             )
-        except subprocess.CalledProcessError:
-            validation_errors.append("Git user.name not configured")
         
+        # Use GitPython to validate configuration
         try:
-            subprocess.run(
-                [git_executable, "config", "user.email"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=5,
-                shell=platform_info.is_windows
-            )
-        except subprocess.CalledProcessError:
-            validation_errors.append("Git user.email not configured")
-        
-        # Check remote configuration if URL is provided
-        if config.git_remote_url:
+            repo = Repo(git_repo_dir)
+            
+            # Check Git configuration
             try:
-                result = subprocess.run(
-                    [git_executable, "remote", "get-url", "origin"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    cwd=git_repo_dir,
-                    timeout=5,
-                    shell=platform_info.is_windows
-                )
-                remote_url = result.stdout.strip()
-                if remote_url != config.git_remote_url:
-                    validation_errors.append(f"Git remote URL mismatch: expected {config.git_remote_url}, got {remote_url}")
-            except subprocess.CalledProcessError:
-                validation_errors.append("Git remote 'origin' not configured")
+                with repo.config_reader() as config_reader:
+                    user_name = config_reader.get_value("user", "name", fallback=None)
+                    if not user_name:
+                        validation_errors.append("Git user.name not configured")
+            except Exception:
+                validation_errors.append("Git user.name not configured")
+            
+            try:
+                with repo.config_reader() as config_reader:
+                    user_email = config_reader.get_value("user", "email", fallback=None)
+                    if not user_email:
+                        validation_errors.append("Git user.email not configured")
+            except Exception:
+                validation_errors.append("Git user.email not configured")
+            
+            # Check remote configuration if URL is provided
+            if config.git_remote_url:
+                try:
+                    origin_remote = repo.remote('origin')
+                    remote_urls = list(origin_remote.urls)
+                    if not remote_urls or remote_urls[0] != config.git_remote_url:
+                        expected_url = config.git_remote_url
+                        actual_url = remote_urls[0] if remote_urls else "None"
+                        validation_errors.append(f"Git remote URL mismatch: expected {expected_url}, got {actual_url}")
+                except git.exc.GitCommandError:
+                    validation_errors.append("Git remote 'origin' not configured")
+                except Exception as e:
+                    validation_errors.append(f"Error checking remote configuration: {e}")
+                    
+        except InvalidGitRepositoryError:
+            validation_errors.append("Invalid Git repository")
+        except Exception as e:
+            validation_errors.append(f"Error accessing repository: {e}")
         
         if validation_errors:
             error_msg = f"Git configuration validation failed: {'; '.join(validation_errors)}"
@@ -292,13 +298,12 @@ def validate_git_configuration(git_repo_dir: Path, git_dir: Path, config: Config
 
 def detect_remote_default_branch(remote_url: str, config: Config, git_repo_dir: Path) -> str:
     """
-    Detect the default branch of a remote repository.
+    Detect the default branch of a remote repository using GitPython.
     
     This function attempts to determine the default branch name by:
-    1. Using `git ls-remote --symref` to get symbolic references
-    2. Parsing the symbolic reference to extract branch name
-    3. Falling back to common branch names (main, master, develop)
-    4. Defaulting to "main" if detection fails
+    1. Using GitPython's remote functionality to get symbolic references
+    2. Falling back to common branch names (main, master, develop)
+    3. Defaulting to "main" if detection fails
     
     Args:
         remote_url: URL of the remote repository
@@ -307,42 +312,58 @@ def detect_remote_default_branch(remote_url: str, config: Config, git_repo_dir: 
         
     Returns:
         str: The detected default branch name
-        
-    Requirements: 2.1, 2.2, 2.3
     """
     logger = logging.getLogger('aiaml.git_sync')
-    git_executable = get_git_executable()
-    platform_info = get_platform_info()
     
     logger.debug(f"Detecting default branch for remote: {remote_url}")
     
-    # Strategy 1: Use git ls-remote --symref to get symbolic reference
+    # Strategy 1: Use GitPython to get remote references
     try:
-        logger.debug("Attempting to detect default branch using symbolic references")
+        logger.debug("Attempting to detect default branch using GitPython remote references")
         
-        result = subprocess.run(
-            [git_executable, "ls-remote", "--symref", remote_url, "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
+        # Create a temporary repo object or use existing one
+        try:
+            repo = Repo(git_repo_dir)
+        except InvalidGitRepositoryError:
+            # If no repo exists, we'll use git command directly via GitPython
+            repo = None
         
-        # Parse the output to find the symbolic reference
-        # Expected format: "ref: refs/heads/main\tHEAD"
-        for line in result.stdout.strip().split('\n'):
-            if line.startswith('ref: refs/heads/'):
-                branch_name = line.split('ref: refs/heads/')[1].split('\t')[0].strip()
-                logger.info(f"Detected default branch via symbolic reference: {branch_name}")
-                return branch_name
+        if repo:
+            try:
+                # Try to get the origin remote and its refs
+                origin = repo.remote('origin')
+                refs = origin.refs
                 
-    except subprocess.CalledProcessError as e:
-        logger.warning(f"Failed to detect default branch via symbolic reference: {e.stderr if e.stderr else str(e)}")
-    except subprocess.TimeoutExpired:
-        logger.warning("Timeout while detecting default branch via symbolic reference")
+                # Look for HEAD reference
+                for ref in refs:
+                    if ref.name == 'origin/HEAD':
+                        # Extract branch name from the reference
+                        branch_name = str(ref.ref).replace('refs/heads/', '')
+                        logger.info(f"Detected default branch via GitPython remote refs: {branch_name}")
+                        return branch_name
+            except Exception as e:
+                logger.debug(f"Failed to get remote refs via GitPython: {e}")
+        
+        # Fallback: Use git command via GitPython
+        try:
+            git_cmd = git.Git()
+            result = git_cmd.ls_remote('--symref', remote_url, 'HEAD')
+            
+            # Parse the output to find the symbolic reference
+            # Expected format: "ref: refs/heads/main\tHEAD"
+            for line in result.strip().split('\n'):
+                if line.startswith('ref: refs/heads/'):
+                    branch_name = line.split('ref: refs/heads/')[1].split('\t')[0].strip()
+                    logger.info(f"Detected default branch via GitPython ls-remote: {branch_name}")
+                    return branch_name
+                    
+        except GitCommandError as e:
+            logger.warning(f"Failed to detect default branch via GitPython ls-remote: {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected error detecting default branch via GitPython: {e}")
+                
     except Exception as e:
-        logger.warning(f"Unexpected error detecting default branch via symbolic reference: {e}")
+        logger.warning(f"Unexpected error detecting default branch: {e}")
     
     # Strategy 2: Try common branch names by checking if they exist on remote
     common_branches = ["main", "master", "develop"]
@@ -352,24 +373,16 @@ def detect_remote_default_branch(remote_url: str, config: Config, git_repo_dir: 
         try:
             logger.debug(f"Checking if branch '{branch_name}' exists on remote")
             
-            result = subprocess.run(
-                [git_executable, "ls-remote", "--heads", remote_url, branch_name],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                shell=platform_info.is_windows
-            )
+            git_cmd = git.Git()
+            result = git_cmd.ls_remote('--heads', remote_url, branch_name)
             
             # If the command succeeds and returns output, the branch exists
-            if result.stdout.strip():
+            if result.strip():
                 logger.info(f"Found existing branch on remote: {branch_name}")
                 return branch_name
                 
-        except subprocess.CalledProcessError as e:
-            logger.debug(f"Branch '{branch_name}' not found on remote: {e.stderr if e.stderr else str(e)}")
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Timeout while checking branch '{branch_name}' on remote")
+        except GitCommandError as e:
+            logger.debug(f"Branch '{branch_name}' not found on remote: {e}")
         except Exception as e:
             logger.debug(f"Error checking branch '{branch_name}' on remote: {e}")
     

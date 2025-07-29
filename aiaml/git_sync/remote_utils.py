@@ -1,10 +1,10 @@
 """Remote repository utilities for Git synchronization."""
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional
 
+from git import Repo, GitCommandError, RemoteProgress
 from ..platform import get_git_executable, get_platform_info
 
 
@@ -13,20 +13,17 @@ def check_remote_accessibility(remote_url: str) -> bool:
     logger = logging.getLogger('aiaml.git_sync.remote_utils')
     
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        # Create a temporary repo-like object to test remote connectivity
+        from git import cmd
+        git_cmd = cmd.Git()
         
         # Use git ls-remote to check if remote is accessible
-        result = subprocess.run(
-            [git_executable, "ls-remote", "--heads", remote_url],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
+        git_cmd.ls_remote('--heads', remote_url)
+        return True
         
-        return result.returncode == 0
-        
+    except GitCommandError as e:
+        logger.debug(f"Git command error checking remote accessibility for {remote_url}: {e}")
+        return False
     except Exception as e:
         logger.debug(f"Error checking remote accessibility for {remote_url}: {e}")
         return False
@@ -40,41 +37,32 @@ def detect_remote_default_branch(remote_url: str) -> Optional[str]:
         return None
     
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        from git import cmd
+        git_cmd = cmd.Git()
         
         # Use git ls-remote to get symbolic reference
-        result = subprocess.run(
-            [git_executable, "ls-remote", "--symref", remote_url, "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
+        try:
+            output = git_cmd.ls_remote('--symref', remote_url, 'HEAD')
+            lines = output.strip().split('\n')
             for line in lines:
                 if line.startswith('ref: refs/heads/'):
-                    # Extract branch name from "ref: refs/heads/main"
-                    branch_name = line.split('refs/heads/')[-1]
+                    # Extract branch name from "ref: refs/heads/main\tHEAD"
+                    branch_name = line.split('refs/heads/')[-1].split('\t')[0].strip()
                     logger.debug(f"Detected remote default branch: {branch_name}")
                     return branch_name
+        except GitCommandError:
+            logger.debug("Could not get symbolic ref for HEAD, trying fallback")
         
         # Fallback: try common branch names
         common_branches = ["main", "master", "develop"]
         for branch in common_branches:
-            result = subprocess.run(
-                [git_executable, "ls-remote", "--heads", remote_url, branch],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
-            
-            if result.returncode == 0 and result.stdout.strip():
-                logger.debug(f"Found remote branch using fallback: {branch}")
-                return branch
+            try:
+                output = git_cmd.ls_remote('--heads', remote_url, branch)
+                if output.strip():
+                    logger.debug(f"Found remote branch using fallback: {branch}")
+                    return branch
+            except GitCommandError:
+                continue
         
         return None
         
@@ -92,19 +80,13 @@ def check_local_remote_configured(git_repo_dir: Path) -> bool:
         return False
     
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
-        result = subprocess.run(
-            [git_executable, "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        return result.returncode == 0
+        repo = Repo(git_repo_dir)
+        # Check if origin remote exists
+        try:
+            origin_remote = repo.remote('origin')
+            return origin_remote is not None
+        except Exception:
+            return False
         
     except Exception as e:
         logger.debug(f"Error checking local remote configuration: {e}")
@@ -120,40 +102,35 @@ def check_synchronization_status(git_repo_dir: Path) -> bool:
         return False
     
     try:
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        repo = Repo(git_repo_dir)
         
         # Import here to avoid circular imports
         from .branch_utils import get_current_local_branch
         
         # Fetch latest remote information
-        subprocess.run(
-            [git_executable, "fetch", "origin"],
-            capture_output=True,
-            cwd=git_repo_dir,
-            timeout=30,
-            shell=platform_info.is_windows
-        )
+        try:
+            origin = repo.remotes.origin
+            origin.fetch()
+        except GitCommandError as e:
+            logger.debug(f"Failed to fetch from origin: {e}")
+            return False
         
         # Check if local branch is up to date with remote
         current_branch = get_current_local_branch(git_repo_dir)
         if not current_branch:
             return False
         
-        result = subprocess.run(
-            [git_executable, "rev-list", "--count", f"HEAD..origin/{current_branch}"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode == 0:
-            behind_count = int(result.stdout.strip())
-            return behind_count == 0
-        
-        return False
+        try:
+            # Get current commit and remote commit
+            current_commit = repo.head.commit
+            remote_branch = repo.remotes.origin.refs[current_branch]
+            remote_commit = remote_branch.commit
+            
+            # Check if we're behind the remote
+            return current_commit == remote_commit
+        except Exception as e:
+            logger.debug(f"Error comparing commits: {e}")
+            return False
         
     except Exception as e:
         logger.debug(f"Error checking synchronization status: {e}")

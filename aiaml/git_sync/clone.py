@@ -1,17 +1,23 @@
-"""Repository cloning utilities for Git synchronization."""
+"""Repository cloning utilities for Git synchronization using GitPython."""
 
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Optional
 
+try:
+    from git import Repo, GitCommandError
+    HAS_GITPYTHON = True
+except ImportError:
+    HAS_GITPYTHON = False
+    
+    class GitCommandError(Exception):
+        pass
+
 from ..config import Config
-from ..platform import get_git_executable, get_platform_info, get_platform_specific_git_config
 from .utils import GitSyncResult, create_git_sync_result
 from .validation import validate_cloned_repository
 from .repository_info import RepositoryState, RepositoryInfo
-from .branch_utils import get_current_local_branch
 
 
 def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResult:
@@ -101,35 +107,29 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
                     # Remove the now-empty directory
                     git_repo_dir.rmdir()
         
-        # Perform the Git clone operation
+        # Perform the Git clone operation using GitPython
         logger.info(f"Cloning repository from {config.git_remote_url}")
         
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
+        if not HAS_GITPYTHON:
+            return GitSyncResult(
+                success=False,
+                message="Git clone failed: GitPython not available. Please install with: pip install GitPython",
+                operation="clone_repository",
+                error_code="GITPYTHON_NOT_AVAILABLE"
+            )
         
-        # Use git clone with appropriate options
-        clone_command = [
-            git_executable, "clone",
-            config.git_remote_url,
-            str(git_repo_dir)
-        ]
-        
-        # Add additional clone options for better reliability
-        clone_command.extend([
-            "--single-branch",  # Only clone the default branch initially
-            "--depth", "1"      # Shallow clone for faster operation
-        ])
-        
-        result = subprocess.run(
-            clone_command,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout for clone operations
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            error_msg = f"Git clone failed: {result.stderr if result.stderr else result.stdout}"
+        try:
+            # Clone with GitPython - much simpler!
+            repo = Repo.clone_from(
+                config.git_remote_url,
+                git_repo_dir,
+                depth=1,  # Shallow clone for faster operation
+                single_branch=True  # Only clone the default branch initially
+            )
+            logger.info("Repository cloned successfully")
+            
+        except GitCommandError as e:
+            error_msg = f"Git clone failed: {str(e)}"
             logger.error(error_msg)
             return create_git_sync_result(
                 success=False,
@@ -138,18 +138,28 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
                 error_code="GIT_CLONE_FAILED"
             )
         
-        logger.info("Repository cloned successfully")
-        
         # Validate the cloned repository structure
         validation_result = validate_cloned_repository(git_repo_dir, config.git_remote_url)
         if not validation_result.success:
             return validation_result
         
-        # Set up Git configuration for the cloned repository
-        setup_result = setup_cloned_repository_config(git_repo_dir)
-        if not setup_result.success:
-            # Log warning but don't fail the clone operation
-            logger.warning(f"Failed to set up cloned repository configuration: {setup_result.message}")
+        # Set up Git configuration for the cloned repository using GitPython
+        try:
+            # Set up user configuration if not already set
+            config_writer = repo.config_writer()
+            try:
+                repo.config_reader().get_value("user", "name")
+            except:
+                config_writer.set_value("user", "name", "AIAML Memory System")
+            
+            try:
+                repo.config_reader().get_value("user", "email")  
+            except:
+                config_writer.set_value("user", "email", "aiaml@localhost")
+            
+            logger.debug("Git configuration set up for cloned repository")
+        except Exception as e:
+            logger.warning(f"Failed to set up cloned repository configuration: {e}")
         
         # Restore any backed up files
         if temp_backup_dir and temp_backup_dir.exists():
@@ -177,8 +187,11 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
         
         logger.info(f"Repository clone completed successfully from {config.git_remote_url}")
         
-        # Detect the current branch after cloning
-        current_branch = get_current_local_branch(git_repo_dir)
+        # Get current branch information using GitPython
+        try:
+            current_branch = repo.active_branch.name if repo.active_branch else "main"
+        except:
+            current_branch = "main"  # Fallback
         if not current_branch:
             current_branch = "main"  # Fallback
         
@@ -203,15 +216,6 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
             branch_used=current_branch
         )
         
-    except subprocess.TimeoutExpired:
-        error_msg = "Repository clone operation timed out"
-        logger.error(error_msg)
-        return create_git_sync_result(
-            success=False,
-            message=error_msg,
-            operation="clone_repository",
-            error_code="CLONE_TIMEOUT"
-        )
         
     except Exception as e:
         error_msg = f"Unexpected error during repository clone: {e}"
@@ -223,124 +227,3 @@ def clone_existing_repository(config: Config, git_repo_dir: Path) -> GitSyncResu
             error_code="CLONE_UNEXPECTED_ERROR"
         )
 
-
-def setup_cloned_repository_config(git_repo_dir: Path) -> GitSyncResult:
-    """
-    Set up Git configuration for a cloned repository.
-    
-    This function ensures that the cloned repository has proper:
-    1. User name and email configuration
-    2. Platform-specific Git settings
-    3. Any additional AIAML-specific configuration
-    
-    Args:
-        git_repo_dir: Path to the Git repository directory
-        
-    Returns:
-        GitSyncResult indicating setup success or failure
-    """
-    logger = logging.getLogger('aiaml.git_sync.clone')
-    
-    try:
-        logger.debug("Setting up cloned repository configuration")
-        
-        git_executable = get_git_executable()
-        platform_info = get_platform_info()
-        
-        # Check if user.name is configured
-        result = subprocess.run(
-            [git_executable, "config", "user.name"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            # Set default user name
-            subprocess.run(
-                [git_executable, "config", "user.name", "AIAML Memory System"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
-            logger.debug("Set default Git user.name for cloned repository")
-        
-        # Check if user.email is configured
-        result = subprocess.run(
-            [git_executable, "config", "user.email"],
-            capture_output=True,
-            text=True,
-            cwd=git_repo_dir,
-            timeout=10,
-            shell=platform_info.is_windows
-        )
-        
-        if result.returncode != 0:
-            # Set default user email
-            subprocess.run(
-                [git_executable, "config", "user.email", "aiaml@localhost"],
-                check=True,
-                capture_output=True,
-                cwd=git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
-            logger.debug("Set default Git user.email for cloned repository")
-        
-        # Apply platform-specific Git configuration
-        platform_git_config = get_platform_specific_git_config()
-        for config_key, config_value in platform_git_config.items():
-            try:
-                subprocess.run(
-                    [git_executable, "config", config_key, config_value],
-                    check=True,
-                    capture_output=True,
-                    cwd=git_repo_dir,
-                    timeout=10,
-                    shell=platform_info.is_windows
-                )
-                logger.debug(f"Set Git config {config_key} = {config_value} for cloned repository")
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to set Git config {config_key} for cloned repository: {e}")
-        
-        logger.debug("Cloned repository configuration setup completed")
-        
-        return GitSyncResult(
-            success=True,
-            message="Cloned repository configuration setup completed",
-            operation="setup_cloned_repo_config"
-        )
-        
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Failed to set up cloned repository configuration: {e.stderr if e.stderr else str(e)}"
-        logger.error(error_msg)
-        return GitSyncResult(
-            success=False,
-            message=error_msg,
-            operation="setup_cloned_repo_config",
-            error_code="CONFIG_SETUP_FAILED"
-        )
-        
-    except subprocess.TimeoutExpired:
-        error_msg = "Cloned repository configuration setup timed out"
-        logger.error(error_msg)
-        return GitSyncResult(
-            success=False,
-            message=error_msg,
-            operation="setup_cloned_repo_config",
-            error_code="CONFIG_SETUP_TIMEOUT"
-        )
-        
-    except Exception as e:
-        error_msg = f"Unexpected error during cloned repository configuration setup: {e}"
-        logger.error(error_msg, exc_info=True)
-        return GitSyncResult(
-            success=False,
-            message=error_msg,
-            operation="setup_cloned_repo_config",
-            error_code="CONFIG_SETUP_UNEXPECTED_ERROR"
-        )

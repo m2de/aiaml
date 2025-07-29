@@ -1,17 +1,29 @@
 """Core GitSyncManager functionality."""
 
 import logging
-import subprocess
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 from contextlib import nullcontext
 
+try:
+    import git  
+    from git import Repo, GitCommandError, InvalidGitRepositoryError
+    HAS_GITPYTHON = True
+except ImportError:
+    HAS_GITPYTHON = False
+    
+    class GitCommandError(Exception):
+        pass
+    
+    class InvalidGitRepositoryError(Exception):
+        pass
+
 from ..config import Config
-from ..platform import get_platform_info, get_git_executable
+from ..platform import get_platform_info
 from .utils import GitSyncResult, create_git_sync_result
 from .operations import (
-    execute_git_command_with_retry,
+    execute_git_operation_with_retry,
     setup_initial_git_config,
     validate_git_configuration
 )
@@ -275,166 +287,66 @@ class GitSyncManagerCore:
     
     def _init_git_repository(self) -> GitSyncResult:
         """
-        Initialize a new Git repository.
+        Initialize a new Git repository using GitPython.
         
         Returns:
             GitSyncResult indicating success or failure
         """
-        try:
-            self.logger.info("Initializing new Git repository for memory synchronization")
-            
-            # Run git init with cross-platform executable
-            git_executable = get_git_executable()
-            platform_info = get_platform_info()
-            
-            result = subprocess.run(
-                [git_executable, "init"],
-                check=True,
-                capture_output=True,
-                text=True,
-                cwd=self.git_repo_dir,
-                timeout=30,
-                shell=platform_info.is_windows
-            )
-            
+        def init_operation():
+            """GitPython operation to initialize repository."""
+            repo = Repo.init(self.git_repo_dir)
             self.logger.info("Git repository initialized successfully")
             
             # Set up initial configuration
             setup_initial_git_config(self.git_repo_dir)
+            return repo
             
-            return create_git_sync_result(
-                success=True,
-                message="Git repository initialized",
-                operation="git_init"
-            )
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Git init failed: {e.stderr if e.stderr else str(e)}"
-            self.logger.error(error_msg)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="git_init",
-                error_code="GIT_INIT_COMMAND_FAILED"
-            )
-        
-        except subprocess.TimeoutExpired:
-            error_msg = "Git init timed out"
-            self.logger.error(error_msg)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="git_init",
-                error_code="GIT_INIT_TIMEOUT"
-            )
-        
-        except Exception as e:
-            error_msg = f"Unexpected error during Git init: {e}"
-            self.logger.error(error_msg, exc_info=True)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="git_init",
-                error_code="GIT_INIT_UNEXPECTED_ERROR"
-            )
+        return execute_git_operation_with_retry(
+            init_operation,
+            "git_init",
+            self.git_repo_dir,
+            self.config
+        )
     
     def _configure_git_remote(self) -> GitSyncResult:
         """
-        Configure Git remote URL.
+        Configure Git remote URL using GitPython.
         
         Returns:
             GitSyncResult indicating success or failure
         """
-        try:
-            self.logger.info(f"Configuring Git remote: {self.config.git_remote_url}")
-            
-            git_executable = get_git_executable()
-            platform_info = get_platform_info()
+        def configure_remote_operation():
+            """GitPython operation to configure remote."""
+            repo = Repo(self.git_repo_dir)
             
             # Check if remote already exists
-            result = subprocess.run(
-                [git_executable, "remote", "get-url", "origin"],
-                capture_output=True,
-                text=True,
-                cwd=self.git_repo_dir,
-                timeout=10,
-                shell=platform_info.is_windows
-            )
-            
-            if result.returncode == 0:
-                # Remote exists, check if it matches our configuration
-                existing_url = result.stdout.strip()
-                if existing_url == self.config.git_remote_url:
+            try:
+                origin_remote = repo.remote('origin')
+                existing_urls = list(origin_remote.urls)
+                
+                if existing_urls and existing_urls[0] == self.config.git_remote_url:
                     self.logger.debug("Git remote already configured correctly")
-                    return GitSyncResult(
-                        success=True,
-                        message="Git remote already configured",
-                        operation="configure_remote"
-                    )
+                    return "already_configured"
                 else:
                     # Update existing remote
-                    subprocess.run(
-                        [git_executable, "remote", "set-url", "origin", self.config.git_remote_url],
-                        check=True,
-                        capture_output=True,
-                        cwd=self.git_repo_dir,
-                        timeout=10,
-                        shell=platform_info.is_windows
-                    )
+                    origin_remote.set_url(self.config.git_remote_url)
                     self.logger.info(f"Git remote updated to: {self.config.git_remote_url}")
-            else:
-                # Add new remote
-                subprocess.run(
-                    [git_executable, "remote", "add", "origin", self.config.git_remote_url],
-                    check=True,
-                    capture_output=True,
-                    cwd=self.git_repo_dir,
-                    timeout=10,
-                    shell=platform_info.is_windows
-                )
+                    return "updated"
+                    
+            except git.exc.GitCommandError:
+                # Remote doesn't exist, create it
+                repo.create_remote('origin', self.config.git_remote_url)
                 self.logger.info(f"Git remote added: {self.config.git_remote_url}")
-            
-            return GitSyncResult(
-                success=True,
-                message="Git remote configured successfully",
-                operation="configure_remote"
-            )
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Failed to configure Git remote: {e.stderr if e.stderr else str(e)}"
-            self.logger.error(error_msg)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="configure_remote",
-                error_code="GIT_REMOTE_CONFIG_FAILED"
-            )
+                return "added"
         
-        except subprocess.TimeoutExpired:
-            error_msg = "Git remote configuration timed out"
-            self.logger.error(error_msg)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="configure_remote",
-                error_code="GIT_REMOTE_CONFIG_TIMEOUT"
-            )
+        self.logger.info(f"Configuring Git remote: {self.config.git_remote_url}")
         
-        except Exception as e:
-            error_msg = f"Unexpected error configuring Git remote: {e}"
-            self.logger.error(error_msg, exc_info=True)
-            
-            return GitSyncResult(
-                success=False,
-                message=error_msg,
-                operation="configure_remote",
-                error_code="GIT_REMOTE_CONFIG_UNEXPECTED_ERROR"
-            )
+        return execute_git_operation_with_retry(
+            configure_remote_operation,
+            "configure_remote",
+            self.git_repo_dir,
+            self.config
+        )
     
     @property
     def initialized(self) -> bool:
