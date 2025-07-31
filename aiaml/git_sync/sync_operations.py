@@ -151,7 +151,8 @@ class SyncOperations:
             # Get list of conflicted files
             try:
                 # Get unmerged files (conflicts)
-                conflicted_files = [item.a_path for item in repo.index.unmerged_blobs().keys()]
+                unmerged_blobs = repo.index.unmerged_blobs()
+                conflicted_files = list(unmerged_blobs.keys())
             except Exception as e:
                 error_msg = f"Failed to get list of conflicted files: {e}"
                 self.logger.error(error_msg)

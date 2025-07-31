@@ -70,8 +70,7 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
         
         # Check remote configuration
         try:
-            origin_remote = repo.remotes.get('origin')
-            if not origin_remote:
+            if 'origin' not in repo.remotes:
                 error_msg = "Cloned repository validation failed: origin remote not configured"
                 logger.error(error_msg)
                 return GitSyncResult(
@@ -80,6 +79,7 @@ def validate_cloned_repository(git_repo_dir: Path, git_remote_url: str) -> GitSy
                     operation="validate_cloned_repo",
                     error_code="MISSING_ORIGIN_REMOTE"
                 )
+            origin_remote = repo.remote('origin')
             
             # Verify remote URL matches configuration
             actual_remote_url = origin_remote.url

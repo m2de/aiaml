@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 
 try:
     import git
-    from git import Repo, InvalidGitRepositoryError
+    from git import Repo, InvalidGitRepositoryError, GitCommandError
     HAS_GITPYTHON = True
 except ImportError:
     HAS_GITPYTHON = False
@@ -107,7 +107,7 @@ class GitSyncManager:
                         status['remote_configured'] = True
                         status['actual_remote_url'] = remote_urls[0]
                     
-                except git.exc.GitCommandError:
+                except GitCommandError:
                     # Remote 'origin' doesn't exist
                     status['remote_configured'] = False
                 except InvalidGitRepositoryError:
