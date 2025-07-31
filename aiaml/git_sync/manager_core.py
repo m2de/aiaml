@@ -333,7 +333,7 @@ class GitSyncManagerCore:
                     self.logger.info(f"Git remote updated to: {self.config.git_remote_url}")
                     return "updated"
                     
-            except git.exc.GitCommandError:
+            except GitCommandError:
                 # Remote doesn't exist, create it
                 repo.create_remote('origin', self.config.git_remote_url)
                 self.logger.info(f"Git remote added: {self.config.git_remote_url}")

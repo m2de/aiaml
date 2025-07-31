@@ -204,10 +204,12 @@ def synchronize_with_remote(git_repo_dir: Path, config, get_default_branch_func,
         logger.debug(f"Pulling changes from origin/{default_branch}")
         
         try:
-            # Use GitPython's pull method with merge strategy
+            # Use fetch + merge instead of pull with strategy_option (which isn't supported)
             origin = repo.remotes.origin
-            origin.pull(default_branch, strategy_option='theirs')
-            logger.info("Successfully pulled changes from remote")
+            # We already fetched above, now merge with theirs strategy
+            remote_branch = origin.refs[default_branch]
+            repo.git.merge(remote_branch, strategy='recursive', X='theirs')
+            logger.info("Successfully merged changes from remote")
         except GitCommandError as e:
             # Check if it's a merge conflict that needs manual resolution
             if "CONFLICT" in str(e):

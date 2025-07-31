@@ -150,7 +150,12 @@ def setup_initial_git_config(git_repo_dir: Path) -> None:
         # Apply platform-specific Git configuration
         for config_key, config_value in platform_git_config.items():
             try:
-                repo.config_writer().set_value("core", config_key.split('.')[-1], config_value)
+                # Parse config key to extract section and key
+                if '.' in config_key:
+                    section, key = config_key.rsplit('.', 1)
+                else:
+                    section, key = 'core', config_key
+                repo.config_writer().set_value(section, key, config_value)
                 logger.debug(f"Set Git config {config_key} = {config_value}")
             except Exception as e:
                 logger.warning(f"Failed to set Git config {config_key}: {e}")
@@ -259,7 +264,7 @@ def validate_git_configuration(git_repo_dir: Path, git_dir: Path, config: Config
                         expected_url = config.git_remote_url
                         actual_url = remote_urls[0] if remote_urls else "None"
                         validation_errors.append(f"Git remote URL mismatch: expected {expected_url}, got {actual_url}")
-                except git.exc.GitCommandError:
+                except GitCommandError:
                     validation_errors.append("Git remote 'origin' not configured")
                 except Exception as e:
                     validation_errors.append(f"Error checking remote configuration: {e}")
