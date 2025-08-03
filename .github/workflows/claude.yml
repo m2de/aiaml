@@ -13,26 +13,36 @@ on:
 jobs:
   claude:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') && 
+         contains(fromJson('["OWNER","COLLABORATOR","MEMBER"]'), github.event.comment.author_association)) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') && 
+         contains(fromJson('["OWNER","COLLABORATOR","MEMBER"]'), github.event.comment.author_association)) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') && 
+         contains(fromJson('["OWNER","COLLABORATOR","MEMBER"]'), github.event.review.author_association)) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) && 
+         contains(fromJson('["OWNER","COLLABORATOR","MEMBER"]'), github.event.issue.author_association))
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write # Allow Claude to create/modify files
+      pull-requests: write # Allow Claude to create PRs and update them
+      issues: write # Allow Claude to comment on issues
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
+      checks: write # Allow Claude to create status checks
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        timeout-minutes: 5
         with:
           fetch-depth: 1
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@beta
+        timeout-minutes: 25
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -49,16 +59,34 @@ jobs:
           # Optional: Trigger when specific user is assigned to an issue
           # assignee_trigger: "claude-bot"
           
-          # Optional: Allow Claude to run specific commands
-          # allowed_tools: "Bash(npm install),Bash(npm run build),Bash(npm run test:*),Bash(npm run lint:*)"
+          # Allow Claude to run development commands
+          allowed_tools: "Bash(*),Edit(*),Write(*),Read(*),Glob(*),Grep(*),MultiEdit(*)"
           
-          # Optional: Add custom instructions for Claude to customize its behavior for your project
-          # custom_instructions: |
-          #   Follow our coding standards
-          #   Ensure all new code has tests
-          #   Use TypeScript for new files
+          # Limit number of interaction turns to prevent infinite loops
+          max_turns: 50
           
-          # Optional: Custom environment variables for Claude
-          # claude_env: |
-          #   NODE_ENV: test
+          # Custom instructions for Claude to customize its behavior for your project
+          custom_instructions: |
+            You have full development access to this repository. You can:
+            - Create, modify, and delete files as needed
+            - Run any bash commands including installs, builds, tests, and linting
+            - Create pull requests and commits
+            - Follow the existing code patterns and conventions in the repository
+            - Run tests after making changes to ensure nothing breaks
+            - Always check for lint/type errors before completing tasks
+            
+            IMPORTANT LIMITS AND CONSTRAINTS:
+            - You have 25 minutes total runtime and maximum 50 turns - work efficiently
+            - Avoid infinite loops or long-running processes
+            - If a task seems too complex for the time/turn limits, break it into smaller parts
+            - Use timeouts on long-running commands (e.g., timeout 300s for 5min max)
+            - If you encounter repeated failures, stop and report the issue rather than retrying indefinitely
+            - Plan your approach to stay within the 50-turn limit
+            
+            When working on this project:
+            - Look at existing code structure and follow the same patterns
+            - Test your changes thoroughly but efficiently
+            - Use appropriate commit messages
+            - Only create PRs when explicitly asked or when changes are substantial
+            - Prioritize the most important changes if time is limited
 
